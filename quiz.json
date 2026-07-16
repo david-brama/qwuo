@@ -1,4 +1,5 @@
 {
+  "$schema": "./quiz.schema.json",
   "title": "Workplace Safety Essentials",
   "questions": [
     {

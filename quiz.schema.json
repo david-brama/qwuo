@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local/quiz.schema.json",
+  "title": "Live Training Quiz",
+  "description": "Schema for quiz.json (QUIZ_PATH). Matches validateQuiz in src/quiz.ts.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["title", "questions"],
+  "properties": {
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S",
+      "description": "Non-empty quiz title (whitespace-only rejected at load)."
+    },
+    "questions": {
+      "type": "array",
+      "minItems": 1,
+      "description": "At least one question.",
+      "items": {
+        "$ref": "#/$defs/question"
+      }
+    }
+  },
+  "$defs": {
+    "question": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["text", "choices", "correct"],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "Non-empty question prompt."
+        },
+        "choices": {
+          "type": "array",
+          "minItems": 2,
+          "description": "Answer options; at least two non-empty strings.",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          }
+        },
+        "correct": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "0-based index into choices; must be < choices.length (enforced at load)."
+        },
+        "explain": {
+          "type": "string",
+          "description": "Optional explanation after reveal. Omitted or null → empty string at load."
+        }
+      }
+    }
+  }
+}
