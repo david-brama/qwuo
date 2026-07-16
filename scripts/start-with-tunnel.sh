@@ -159,7 +159,7 @@ Install Docker: https://docs.docker.com/get-docker/
 Or use native cloudflared:
   TUNNEL_MODE=native ./scripts/start-with-tunnel.sh
 
-Or start without a tunnel (LAN only):
+Or start localhost-only (no phones):
   deno task start
 EOF
         exit 1
@@ -175,7 +175,7 @@ Install: https://developers.cloudflare.com/cloudflare-one/connections/connect-ap
 Or use Docker (default):
   TUNNEL_MODE=docker ./scripts/start-with-tunnel.sh
 
-Or start without a tunnel (LAN only):
+Or start localhost-only (no phones):
   deno task start
 EOF
         exit 1
@@ -193,7 +193,7 @@ Preferred: Docker + docker compose (cloudflare/cloudflared:latest)
 Fallback: cloudflared on PATH
   Install: https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/
 
-Or start without a tunnel (LAN only):
+Or start localhost-only (no phones):
   deno task start
 EOF
           exit 1

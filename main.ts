@@ -119,11 +119,11 @@ try {
 
 try {
   Deno.serve(
-    { hostname: "0.0.0.0", port: config.playerPort, onListen: () => {} },
+    { hostname: "127.0.0.1", port: config.playerPort, onListen: () => {} },
     playerHandler,
   );
 } catch (err) {
-  onListenError("player", "0.0.0.0", config.playerPort, err);
+  onListenError("player", "127.0.0.1", config.playerPort, err);
 }
 
 console.log(`Quiz: ${quiz.title} (${quiz.questions.length} questions)`);
@@ -133,11 +133,11 @@ console.log(
   `Projector (localhost only): http://127.0.0.1:${config.projectorPort}/s/${sessionId}/`,
 );
 console.log(
-  `Player (tunnel this):       http://0.0.0.0:${config.playerPort}/s/${sessionId}/`,
+  `Player (localhost; tunnel this): http://127.0.0.1:${config.playerPort}/s/${sessionId}/`,
 );
 console.log(`Player join URL (QR):       ${joinUrl}`);
 if (!config.publicUrl) {
   console.log(
-    `Tip: set PUBLIC_URL to your cloudflared URL so phones can scan the QR.`,
+    `Tip: set PUBLIC_URL via deno task start:tunnel so phones can scan the QR.`,
   );
 }

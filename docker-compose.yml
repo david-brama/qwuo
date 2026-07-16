@@ -1,5 +1,7 @@
-# Cloudflare quick tunnel for the player port only (projector stays localhost).
+# Cloudflare quick tunnel for the player port only (both app ports are 127.0.0.1).
 # Used by scripts/start-with-tunnel.sh. PLAYER_PORT defaults to 3001.
+# Docker Desktop: host.docker.internal reaches host loopback. On Linux Docker,
+# if this fails, use TUNNEL_MODE=native (cloudflared on host → 127.0.0.1).
 services:
   cloudflared:
     image: cloudflare/cloudflared:latest

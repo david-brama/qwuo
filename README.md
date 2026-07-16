@@ -46,19 +46,19 @@ docker compose ps
 pgrep -fl cloudflared || echo "no native cloudflared"
 ```
 
-## LAN only (no tunnel)
+## Local only (no phones)
 
-Same Wi‑Fi as the host; no cloudflared required:
+Both ports bind `127.0.0.1` only (no LAN). Without a tunnel, only the host can open the player URL:
 
 ```bash
 deno task start
-# or: deno run -A main.ts
+# or: deno run -P main.ts
 ```
 
 - **Projector:** http://127.0.0.1:3000/s/\<session-uuid\>/  
-- **Player:** http://\<your-lan-ip\>:3001/s/\<session-uuid\>/  
+- **Player:** http://127.0.0.1:3001/s/\<session-uuid\>/  
 
-Session UUID is printed at boot (and stored in `.qwuo/current`).
+Session UUID is printed at boot (and stored in `.qwuo/current`). For phones, use `deno task start:tunnel` (or set `PUBLIC_URL`).
 
 ## Manual tunnel (optional)
 
@@ -83,7 +83,7 @@ PUBLIC_URL=https://YOUR-SUBDOMAIN.trycloudflare.com deno task start
 |---------|---------|---------|
 | `PUBLIC_URL` | _(unset)_ | Public base URL for QR / join (e.g. cloudflared URL). Fallback: `http://localhost:PLAYER_PORT`. App appends `/s/{sessionId}` |
 | `PROJECTOR_PORT` | `3000` | Projector HTTP port (localhost only) |
-| `PLAYER_PORT` | `3001` | Player HTTP port (`0.0.0.0`) |
+| `PLAYER_PORT` | `3001` | Player HTTP port (`127.0.0.1` only; expose via cloudflared) |
 | `QUIZ_PATH` | `quiz.json` | Path to quiz content file |
 | `SESSIONS_DIR` | `.qwuo` | Directory for session snapshots (`{uuid}.json`) and active pointer (`current`) |
 | `SESSION_ID` | _(unset)_ | Optional fixed session UUID; otherwise restore via pointer or mint a new one |
