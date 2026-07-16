@@ -1,10 +1,26 @@
 {
   "tasks": {
-    "start": "deno run -A main.ts",
+    "start": "deno run -P main.ts",
     "start:tunnel": "./scripts/start-with-tunnel.sh",
-    "dev": "deno run -A --watch main.ts",
+    "dev": "deno run -P --watch main.ts",
     "test": "deno test -A src/"
   },
+  "permissions": {
+    "default": {
+      "net": true,
+      "write": ["./.qwuo"],
+      "read": ["quiz.json", "./.qwuo", "./node_modules"],
+      "env": [
+        "QUIZ_PATH",
+        "PUBLIC_URL",
+        "SESSION_PATH",
+        "SESSION_FRESH",
+        "PROJECTOR_PORT",
+        "PLAYER_PORT"
+      ]
+    }
+  },
+  "nodeModulesDir": "auto",
   "imports": {
     "marked": "npm:marked@15"
   },

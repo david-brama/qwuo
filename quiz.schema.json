@@ -32,7 +32,7 @@
           "type": "string",
           "minLength": 1,
           "pattern": "\\S",
-          "description": "Non-empty question prompt."
+          "description": "Non-empty question prompt. Markdown is supported."
         },
         "choices": {
           "type": "array",
@@ -51,7 +51,7 @@
         },
         "explain": {
           "type": "string",
-          "description": "Optional explanation after reveal. Omitted or null → empty string at load."
+          "description": "Optional explanation after reveal. Omitted or null → empty string at load. Markdown is supported."
         }
       }
     }

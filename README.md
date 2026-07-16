@@ -88,6 +88,7 @@ Edit `quiz.json` (or point `QUIZ_PATH` at another file):
 
 - `correct` is a **0-based** index into `choices`
 - At least 2 choices per question
+- `text` and `explain` support Markdown (GFM); `quiz.json` is trusted source, rendered as HTML on projector/player
 - `explain` is optional (projector shows “No explanation” if missing)
 - Invalid or missing file → process exits with a clear error
 
