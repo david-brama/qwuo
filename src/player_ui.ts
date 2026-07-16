@@ -1,5 +1,9 @@
 import { PLAYER_CSS } from "./styles.ts";
-import { markedBundleScript, MD_RENDER_JS } from "./markdown.ts";
+import {
+  markedBundleScript,
+  purifyBundleScript,
+  MD_RENDER_JS,
+} from "./markdown.ts";
 
 export function playerHtml(): string {
   return `<!DOCTYPE html>
@@ -65,10 +69,17 @@ export function playerHtml(): string {
     <div class="footer-note">No account needed · answers locked after submit</div>
   </div>
   <script>${markedBundleScript()}</script>
+  <script>${purifyBundleScript()}</script>
   <script>
     ${MD_RENDER_JS}
     const STORAGE_KEY = "ltq_participant_id";
     const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+    // Derive /s/{uuid} from current path so APIs stay session-scoped
+    const SESSION_BASE = (function () {
+      const m = location.pathname.match(/^\\/s\\/[^/]+/);
+      return m ? m[0] : "";
+    })();
 
     let participantId = localStorage.getItem(STORAGE_KEY) || null;
     let participantName = "";
@@ -109,8 +120,8 @@ export function playerHtml(): string {
 
     async function fetchState() {
       const url = participantId
-        ? "/api/state?id=" + encodeURIComponent(participantId)
-        : "/api/state";
+        ? SESSION_BASE + "/api/state?id=" + encodeURIComponent(participantId)
+        : SESSION_BASE + "/api/state";
       const res = await fetch(url);
       if (!res.ok) throw new Error("state failed");
       state = await res.json();
@@ -233,7 +244,7 @@ export function playerHtml(): string {
       answering = true;
       document.getElementById("answer-error").textContent = "";
       try {
-        const res = await fetch("/api/answer", {
+        const res = await fetch(SESSION_BASE + "/api/answer", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ id: participantId, choiceIndex }),
@@ -271,7 +282,7 @@ export function playerHtml(): string {
         return;
       }
       try {
-        const res = await fetch("/api/join", {
+        const res = await fetch(SESSION_BASE + "/api/join", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name }),

@@ -5,35 +5,45 @@ Ad-hoc lockstep training quiz for instructor-led sessions. Host runs Deno on a l
 ## Requirements
 
 - [Deno](https://deno.land/) 1.40+ (or 2.x)
-- [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/) for public phone access (training rooms)
+- [Docker](https://docs.docker.com/get-docker/) + Compose for public phone access (runs `cloudflare/cloudflared:latest`)
+- Optional: [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/) on PATH if you prefer native (`TUNNEL_MODE=native`)
 
 ## Quick start (training room — recommended)
 
-One command starts a Cloudflare quick tunnel to the **player** port, sets `PUBLIC_URL`, and runs the app:
+One command starts a Cloudflare quick tunnel to the **player** port (via Docker Compose by default), sets `PUBLIC_URL`, and runs the app:
 
 ```bash
 deno task start:tunnel
 # or: ./scripts/start-with-tunnel.sh
 ```
 
-Then open the **projector** on the host only:
+Then open the **projector** session URL printed in the console (host only), e.g.:
 
 ```text
-http://127.0.0.1:3000
+http://127.0.0.1:3000/s/<session-uuid>/
 ```
 
-- Phones scan the large lobby QR (points at the tunnel URL)
-- **Ctrl+C** stops both the quiz and the tunnel
+- Phones scan the large lobby QR (tunnel origin + `/s/<session-uuid>`)
+- **Ctrl+C** stops both the quiz and the tunnel container
 - Do **not** tunnel the projector port (it binds to `127.0.0.1` only)
 
 If `PUBLIC_URL` is already set, the script skips cloudflared and starts the app with that URL.
+
+Tunnel backend (`TUNNEL_MODE`):
+
+| Value | Behavior |
+|-------|----------|
+| `auto` (default) | Docker Compose first, then native `cloudflared` |
+| `docker` | `docker-compose.yml` → `cloudflare/cloudflared:latest` only |
+| `native` | `cloudflared` on PATH only |
 
 ### Cleanup check
 
 After Ctrl+C, confirm no orphan tunnel:
 
 ```bash
-pgrep -fl cloudflared || echo "no cloudflared"
+docker compose ps
+pgrep -fl cloudflared || echo "no native cloudflared"
 ```
 
 ## LAN only (no tunnel)
@@ -45,12 +55,22 @@ deno task start
 # or: deno run -A main.ts
 ```
 
-- **Projector:** http://127.0.0.1:3000  
-- **Player:** http://\<your-lan-ip\>:3001  
+- **Projector:** http://127.0.0.1:3000/s/\<session-uuid\>/  
+- **Player:** http://\<your-lan-ip\>:3001/s/\<session-uuid\>/  
+
+Session UUID is printed at boot (and stored in `.qwuo/current`).
 
 ## Manual tunnel (optional)
 
-If you prefer two terminals:
+Docker Compose only:
+
+```bash
+PLAYER_PORT=3001 docker compose up cloudflared
+# copy the trycloudflare URL from logs, then:
+PUBLIC_URL=https://YOUR-SUBDOMAIN.trycloudflare.com deno task start
+```
+
+Or native binary:
 
 ```bash
 cloudflared tunnel --url http://localhost:3001
@@ -61,12 +81,15 @@ PUBLIC_URL=https://YOUR-SUBDOMAIN.trycloudflare.com deno task start
 
 | Env var | Default | Meaning |
 |---------|---------|---------|
-| `PUBLIC_URL` | _(unset)_ | Public base URL for QR / join (e.g. cloudflared URL). Fallback: `http://localhost:PLAYER_PORT` |
+| `PUBLIC_URL` | _(unset)_ | Public base URL for QR / join (e.g. cloudflared URL). Fallback: `http://localhost:PLAYER_PORT`. App appends `/s/{sessionId}` |
 | `PROJECTOR_PORT` | `3000` | Projector HTTP port (localhost only) |
 | `PLAYER_PORT` | `3001` | Player HTTP port (`0.0.0.0`) |
 | `QUIZ_PATH` | `quiz.json` | Path to quiz content file |
-| `SESSION_PATH` | `.qwuo/session.json` | Local snapshot of live session (phase, participants, answers, scores) |
-| `SESSION_FRESH` | _(unset)_ | Set to `1` / `true` / `yes` to wipe snapshot on boot and start empty LOBBY |
+| `SESSIONS_DIR` | `.qwuo` | Directory for session snapshots (`{uuid}.json`) and active pointer (`current`) |
+| `SESSION_ID` | _(unset)_ | Optional fixed session UUID; otherwise restore via pointer or mint a new one |
+| `SESSION_FRESH` | _(unset)_ | Set to `1` / `true` / `yes` to wipe active snapshot on boot and start empty LOBBY |
+
+`SESSION_PATH` is removed. Old `.qwuo/session.json` is not loaded; snapshots are now `{SESSIONS_DIR}/{uuid}.json`.
 
 ## Quiz file
 
@@ -108,11 +131,13 @@ LOBBY → QUESTION → CORRECT → EXPLAIN → LEADERBOARD → (next QUESTION | 
 
 Live session state (phase, question index, participants, scores, per-question answers) is written to a local JSON snapshot after each join, answer, and host advance. Restarting Deno restores that room when the quiz content still matches.
 
-- Default file: `.qwuo/session.json` (override with `SESSION_PATH`)
+- Snapshot path: `{SESSIONS_DIR}/{sessionId}.json` (default dir `.qwuo`; filename stem = session UUID)
+- Active id pointer: `{SESSIONS_DIR}/current` so restart keeps the same room URL without setting `SESSION_ID`
+- Room UI and APIs live under `/s/{sessionId}/` on both ports; join QR encodes `{PUBLIC_URL or local}/s/{sessionId}`
 - Quiz identity is fingerprinted; if you change `quiz.json` content, an old snapshot is ignored and a new LOBBY starts
 - Fresh room without deleting the file by hand:
-  - Boot: `SESSION_FRESH=1 deno task start`
-  - Runtime: `POST /api/reset` on the **projector** port only (player port returns 403)
+  - Boot: `SESSION_FRESH=1 deno task start` (clears snapshot; mints new UUID unless `SESSION_ID` is set)
+  - Runtime: `POST /s/{sessionId}/api/reset` on the **projector** port only (player port returns 403). Keeps the same UUID so printed QR stays valid
 - Snapshot is host-disk only (no cloud sync). Delete the file or reset when the training is done if you do not want scores left on disk
 
 ## Layout
@@ -120,6 +145,7 @@ Live session state (phase, question index, participants, scores, per-question an
 ```
 main.ts                      Entry: load quiz, restore snapshot, start both servers
 quiz.json                    Sample content
+docker-compose.yml           cloudflare/cloudflared:latest (player port)
 scripts/start-with-tunnel.sh Tunnel + app launcher (deno task start:tunnel)
 src/
   config.ts          Env config
@@ -135,6 +161,6 @@ src/
 
 ## Notes
 
-- Session survives Deno restart via the local snapshot (use `SESSION_FRESH` or projector reset for a clean room)
-- Player clients poll `/api/state` about once per second
+- Session survives Deno restart via the local snapshot and pointer (use `SESSION_FRESH` or projector reset for a clean room)
+- Player clients poll `/s/{sessionId}/api/state` about once per second
 - Participant id is stored in the phone’s `localStorage` so reload reattaches — including after server restart when the snapshot still has that id

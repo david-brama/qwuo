@@ -13,7 +13,8 @@
       "env": [
         "QUIZ_PATH",
         "PUBLIC_URL",
-        "SESSION_PATH",
+        "SESSIONS_DIR",
+        "SESSION_ID",
         "SESSION_FRESH",
         "PROJECTOR_PORT",
         "PLAYER_PORT"
@@ -22,7 +23,8 @@
   },
   "nodeModulesDir": "auto",
   "imports": {
-    "marked": "npm:marked@15"
+    "marked": "npm:marked@15",
+    "dompurify": "npm:dompurify@3"
   },
   "compilerOptions": {
     "strict": true,

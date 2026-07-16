@@ -1,5 +1,9 @@
 import { PROJECTOR_CSS } from "./styles.ts";
-import { markedBundleScript, MD_RENDER_JS } from "./markdown.ts";
+import {
+  markedBundleScript,
+  purifyBundleScript,
+  MD_RENDER_JS,
+} from "./markdown.ts";
 
 export function projectorHtml(joinUrl: string, qrSvgMarkup: string): string {
   return `<!DOCTYPE html>
@@ -41,11 +45,18 @@ export function projectorHtml(joinUrl: string, qrSvgMarkup: string): string {
     </div>
   </div>
   <script>${markedBundleScript()}</script>
+  <script>${purifyBundleScript()}</script>
   <script>
     ${MD_RENDER_JS}
     const JOIN_URL = ${JSON.stringify(joinUrl)};
     const QR_SVG = ${JSON.stringify(qrSvgMarkup)};
     const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+    // Derive /s/{uuid} from current path so APIs stay session-scoped
+    const SESSION_BASE = (function () {
+      const m = location.pathname.match(/^\\/s\\/[^/]+/);
+      return m ? m[0] : "";
+    })();
 
     const main = document.getElementById("main");
     const phaseLabel = document.getElementById("phase-label");
@@ -188,7 +199,7 @@ export function projectorHtml(joinUrl: string, qrSvgMarkup: string): string {
     }
 
     async function fetchState() {
-      const res = await fetch("/api/state");
+      const res = await fetch(SESSION_BASE + "/api/state");
       if (!res.ok) throw new Error("state failed");
       state = await res.json();
       render();
@@ -197,7 +208,7 @@ export function projectorHtml(joinUrl: string, qrSvgMarkup: string): string {
     nextBtn.addEventListener("click", async () => {
       nextBtn.disabled = true;
       try {
-        const res = await fetch("/api/advance", { method: "POST" });
+        const res = await fetch(SESSION_BASE + "/api/advance", { method: "POST" });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
           console.error(err);

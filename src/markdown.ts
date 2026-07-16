@@ -1,18 +1,29 @@
-/** Embed marked (UMD min) into inline scripts. Trusted quiz content only. */
-let cached: string | null = null;
+/** Embed marked + DOMPurify (UMD min) into inline scripts. */
+
+let markedCached: string | null = null;
+let purifyCached: string | null = null;
 
 export function markedBundleScript(): string {
-  if (cached == null) {
+  if (markedCached == null) {
     const url = import.meta.resolve("marked/marked.min.js");
-    cached = Deno.readTextFileSync(new URL(url));
+    markedCached = Deno.readTextFileSync(new URL(url));
   }
-  return cached;
+  return markedCached;
 }
 
-/** Client helper after marked UMD loads: parse md → HTML. */
+export function purifyBundleScript(): string {
+  if (purifyCached == null) {
+    const url = import.meta.resolve("dompurify/dist/purify.min.js");
+    purifyCached = Deno.readTextFileSync(new URL(url));
+  }
+  return purifyCached;
+}
+
+/** Client helper after marked + DOMPurify UMD load: md → sanitized HTML. */
 export const MD_RENDER_JS = /* js */ `
     marked.setOptions({ gfm: true, breaks: true });
     function md(src) {
-      return marked.parse(String(src ?? ""), { async: false });
+      const raw = marked.parse(String(src ?? ""), { async: false });
+      return DOMPurify.sanitize(raw);
     }
 `;

@@ -1,7 +1,7 @@
 import type { Session } from "./session.ts";
 import { SessionError } from "./session.ts";
 import type { Config } from "./config.ts";
-import { playerJoinUrl } from "./config.ts";
+import { isValidSessionId, playerJoinUrl } from "./config.ts";
 import { qrSvg } from "./qr.ts";
 import { projectorHtml } from "./projector_ui.ts";
 import { playerHtml } from "./player_ui.ts";
@@ -91,6 +91,34 @@ function tooManyRequests(): Response {
   return json({ error: "Too many requests" }, 429);
 }
 
+function forbiddenOrigin(): Response {
+  return json({ error: "Forbidden origin" }, 403);
+}
+
+/** Loopback only: 127.0.0.1, localhost, ::1 (with or without brackets). */
+export function isLocalOrigin(origin: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(origin);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+  const host = url.hostname.toLowerCase();
+  return host === "127.0.0.1" || host === "localhost" || host === "::1";
+}
+
+/**
+ * Projector CSRF guard: if browser sends Origin and it is not loopback → 403.
+ * Missing Origin allowed (curl, unit tests). Non-local Origin is the CSRF case.
+ */
+function rejectNonLocalOrigin(req: Request): Response | null {
+  const origin = req.headers.get("origin");
+  if (origin === null || origin === "") return null;
+  if (isLocalOrigin(origin)) return null;
+  return forbiddenOrigin();
+}
+
 async function readJson(req: Request): Promise<unknown> {
   const cl = req.headers.get("content-length");
   if (cl !== null) {
@@ -146,6 +174,21 @@ async function readBodyLimited(req: Request, maxBytes: number): Promise<string> 
   return new TextDecoder().decode(merged);
 }
 
+/**
+ * Parse `/s/{uuid}` or `/s/{uuid}/…`.
+ * Returns null if path is not a session-scoped path (including malformed UUID).
+ */
+export function parseSessionPath(
+  pathname: string,
+): { sessionId: string; rest: string } | null {
+  const m = pathname.match(/^\/s\/([^/]+)(\/.*)?$/);
+  if (!m) return null;
+  const sessionId = m[1];
+  if (!isValidSessionId(sessionId)) return null;
+  const rest = m[2] ?? "/";
+  return { sessionId, rest };
+}
+
 /** Optional hooks so join/answer/advance/reset can durable-save without FS in unit tests. */
 export type SessionPersistHooks = {
   /** After successful join / answer / advance. Errors are logged; response still succeeds. */
@@ -169,17 +212,27 @@ async function runHook(
 export function createProjectorHandler(
   session: Session,
   config: Config,
+  sessionId: string,
   hooks?: SessionPersistHooks,
 ) {
-  const joinUrl = playerJoinUrl(config);
+  const joinUrl = playerJoinUrl(config, sessionId);
   const qr = qrSvg(joinUrl);
   const page = projectorHtml(joinUrl, qr);
 
   return async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
-    const path = url.pathname;
+    const parsed = parseSessionPath(url.pathname);
 
     try {
+      const badOrigin = rejectNonLocalOrigin(req);
+      if (badOrigin) return badOrigin;
+
+      if (!parsed || parsed.sessionId !== sessionId) {
+        return notFound();
+      }
+
+      const path = parsed.rest === "" ? "/" : parsed.rest;
+
       if (path === "/" || path === "/index.html") {
         if (req.method !== "GET") return methodNotAllowed();
         return html(page);
@@ -213,6 +266,7 @@ export function createProjectorHandler(
 
 export function createPlayerHandler(
   session: Session,
+  sessionId: string,
   hooks?: SessionPersistHooks,
 ) {
   const page = playerHtml();
@@ -222,10 +276,16 @@ export function createPlayerHandler(
     info?: Deno.ServeHandlerInfo,
   ): Promise<Response> => {
     const url = new URL(req.url);
-    const path = url.pathname;
+    const parsed = parseSessionPath(url.pathname);
     const key = clientKey(req, info);
 
     try {
+      if (!parsed || parsed.sessionId !== sessionId) {
+        return notFound();
+      }
+
+      const path = parsed.rest === "" ? "/" : parsed.rest;
+
       if (path === "/" || path === "/index.html") {
         if (req.method !== "GET") return methodNotAllowed();
         return html(page);
@@ -265,10 +325,16 @@ export function createPlayerHandler(
 
       // Host-only routes rejected on player port
       if (path === "/api/advance") {
-        return json({ error: "Advance is only available on the projector port" }, 403);
+        return json(
+          { error: "Advance is only available on the projector port" },
+          403,
+        );
       }
       if (path === "/api/reset") {
-        return json({ error: "Reset is only available on the projector port" }, 403);
+        return json(
+          { error: "Reset is only available on the projector port" },
+          403,
+        );
       }
 
       return notFound();

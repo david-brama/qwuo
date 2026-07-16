@@ -1,4 +1,10 @@
-import { loadConfig, playerJoinUrl } from "./src/config.ts";
+import {
+  loadConfig,
+  playerJoinUrl,
+  readActiveSessionId,
+  snapshotPath,
+  writeActiveSessionId,
+} from "./src/config.ts";
 import { loadQuiz } from "./src/quiz.ts";
 import { Session } from "./src/session.ts";
 import {
@@ -28,10 +34,26 @@ try {
 
 const fingerprint = await quizFingerprint(quiz);
 
+/** Resolve active session id: env → pointer → mint UUID. */
+async function resolveSessionId(): Promise<string> {
+  if (config.sessionId) return config.sessionId;
+  const fromPointer = await readActiveSessionId(config.sessionsDir);
+  if (fromPointer) return fromPointer;
+  return crypto.randomUUID();
+}
+
+let sessionId = await resolveSessionId();
+let path = snapshotPath(config.sessionsDir, sessionId);
+
 if (config.sessionFresh) {
   try {
-    await clearSnapshot(config.sessionPath);
-    console.log(`SESSION_FRESH: cleared snapshot at ${config.sessionPath}`);
+    await clearSnapshot(path);
+    // No SESSION_ID: mint a new room id after wipe
+    if (!config.sessionId) {
+      sessionId = crypto.randomUUID();
+      path = snapshotPath(config.sessionsDir, sessionId);
+    }
+    console.log(`SESSION_FRESH: cleared snapshot; session id ${sessionId}`);
   } catch (err) {
     console.error(`SESSION_FRESH: failed to clear snapshot:`, err);
   }
@@ -41,35 +63,44 @@ let session: Session;
 if (config.sessionFresh) {
   session = new Session(quiz);
 } else {
-  const snapshot = await loadSnapshot(config.sessionPath, fingerprint);
+  const snapshot = await loadSnapshot(path, fingerprint);
   if (snapshot) {
     session = sessionFromSnapshot(quiz, snapshot);
     console.log(
-      `Restored session from ${config.sessionPath} (phase=${session.phase}, participants=${session.participantCount()})`,
+      `Restored session ${sessionId} from ${path} (phase=${session.phase}, participants=${session.participantCount()})`,
     );
   } else {
     session = new Session(quiz);
   }
 }
 
+await writeActiveSessionId(config.sessionsDir, sessionId);
+
 const hooks: SessionPersistHooks = {
   save: async () => {
-    await saveSnapshot(
-      config.sessionPath,
-      sessionToSnapshot(session, fingerprint),
-    );
+    await saveSnapshot(path, sessionToSnapshot(session, fingerprint));
   },
   clear: async () => {
-    await clearSnapshot(config.sessionPath);
+    await clearSnapshot(path);
   },
 };
 
-const joinUrl = playerJoinUrl(config);
+const joinUrl = playerJoinUrl(config, sessionId);
 
-const projectorHandler = createProjectorHandler(session, config, hooks);
-const playerHandler = createPlayerHandler(session, hooks);
+const projectorHandler = createProjectorHandler(
+  session,
+  config,
+  sessionId,
+  hooks,
+);
+const playerHandler = createPlayerHandler(session, sessionId, hooks);
 
-function onListenError(role: string, hostname: string, port: number, err: unknown): never {
+function onListenError(
+  role: string,
+  hostname: string,
+  port: number,
+  err: unknown,
+): never {
   const msg = err instanceof Error ? err.message : String(err);
   console.error(
     `Failed to start ${role} server on ${hostname}:${port}: ${msg}`,
@@ -96,9 +127,14 @@ try {
 }
 
 console.log(`Quiz: ${quiz.title} (${quiz.questions.length} questions)`);
-console.log(`Session snapshot: ${config.sessionPath}`);
-console.log(`Projector (localhost only): http://127.0.0.1:${config.projectorPort}`);
-console.log(`Player (tunnel this):       http://0.0.0.0:${config.playerPort}`);
+console.log(`Session id: ${sessionId}`);
+console.log(`Session snapshot: ${path}`);
+console.log(
+  `Projector (localhost only): http://127.0.0.1:${config.projectorPort}/s/${sessionId}/`,
+);
+console.log(
+  `Player (tunnel this):       http://0.0.0.0:${config.playerPort}/s/${sessionId}/`,
+);
 console.log(`Player join URL (QR):       ${joinUrl}`);
 if (!config.publicUrl) {
   console.log(

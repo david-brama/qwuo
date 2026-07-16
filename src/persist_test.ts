@@ -136,8 +136,9 @@ Deno.test("loadSnapshot: fingerprint mismatch returns null", async () => {
   assertEquals(result, null);
 });
 
-Deno.test("saveSnapshot atomic load round-trip", async () => {
-  const path = tmpPath("session.json");
+Deno.test("saveSnapshot atomic load round-trip (uuid-named file)", async () => {
+  const sessionUuid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const path = tmpPath(`${sessionUuid}.json`);
   const session = new Session(sampleQuiz);
   const { id } = session.join("Dana");
   session.advance();
@@ -150,6 +151,7 @@ Deno.test("saveSnapshot atomic load round-trip", async () => {
   assertExists(loaded);
   assertEquals(loaded.participants[0].id, id);
   assertEquals(loaded.participants[0].score, 1);
+  assertEquals(path.endsWith(`${sessionUuid}.json`), true);
 
   const restored = sessionFromSnapshot(sampleQuiz, loaded);
   assertEquals(restored.getParticipant(id)?.score, 1);
