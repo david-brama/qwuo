@@ -146,7 +146,31 @@ async function readBodyLimited(req: Request, maxBytes: number): Promise<string> 
   return new TextDecoder().decode(merged);
 }
 
-export function createProjectorHandler(session: Session, config: Config) {
+/** Optional hooks so join/answer/advance/reset can durable-save without FS in unit tests. */
+export type SessionPersistHooks = {
+  /** After successful join / answer / advance. Errors are logged; response still succeeds. */
+  save: () => Promise<void>;
+  /** After host reset: clear snapshot file. */
+  clear: () => Promise<void>;
+};
+
+async function runHook(
+  label: string,
+  fn: (() => Promise<void>) | undefined,
+): Promise<void> {
+  if (!fn) return;
+  try {
+    await fn();
+  } catch (err) {
+    console.error(`Session ${label} failed:`, err);
+  }
+}
+
+export function createProjectorHandler(
+  session: Session,
+  config: Config,
+  hooks?: SessionPersistHooks,
+) {
   const joinUrl = playerJoinUrl(config);
   const qr = qrSvg(joinUrl);
   const page = projectorHtml(joinUrl, qr);
@@ -169,6 +193,14 @@ export function createProjectorHandler(session: Session, config: Config) {
       if (path === "/api/advance") {
         if (req.method !== "POST") return methodNotAllowed();
         session.advance();
+        await runHook("save", hooks?.save);
+        return json(session.projectorState());
+      }
+
+      if (path === "/api/reset") {
+        if (req.method !== "POST") return methodNotAllowed();
+        session.reset();
+        await runHook("clear", hooks?.clear);
         return json(session.projectorState());
       }
 
@@ -179,7 +211,10 @@ export function createProjectorHandler(session: Session, config: Config) {
   };
 }
 
-export function createPlayerHandler(session: Session) {
+export function createPlayerHandler(
+  session: Session,
+  hooks?: SessionPersistHooks,
+) {
   const page = playerHtml();
 
   return async (
@@ -208,6 +243,7 @@ export function createPlayerHandler(session: Session) {
         const body = await readJson(req) as { name?: unknown };
         const name = typeof body.name === "string" ? body.name : "";
         const result = session.join(name);
+        await runHook("save", hooks?.save);
         return json(result);
       }
 
@@ -223,12 +259,16 @@ export function createPlayerHandler(session: Session) {
           ? body.choiceIndex
           : NaN;
         const result = session.answer(id, choiceIndex);
+        await runHook("save", hooks?.save);
         return json(result);
       }
 
       // Host-only routes rejected on player port
       if (path === "/api/advance") {
         return json({ error: "Advance is only available on the projector port" }, 403);
+      }
+      if (path === "/api/reset") {
+        return json({ error: "Reset is only available on the projector port" }, 403);
       }
 
       return notFound();

@@ -1,4 +1,5 @@
 import { PLAYER_CSS } from "./styles.ts";
+import { markedBundleScript, MD_RENDER_JS } from "./markdown.ts";
 
 export function playerHtml(): string {
   return `<!DOCTYPE html>
@@ -63,7 +64,9 @@ export function playerHtml(): string {
 
     <div class="footer-note">No account needed · answers locked after submit</div>
   </div>
+  <script>${markedBundleScript()}</script>
   <script>
+    ${MD_RENDER_JS}
     const STORAGE_KEY = "ltq_participant_id";
     const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
@@ -121,7 +124,7 @@ export function playerHtml(): string {
           localStorage.setItem(STORAGE_KEY, participantId);
         }
       } else if (participantId) {
-        // stale id (server restart)
+        // stale id (reset / new session / missing from snapshot)
         localStorage.removeItem(STORAGE_KEY);
         participantId = null;
         participantName = "";
@@ -157,7 +160,7 @@ export function playerHtml(): string {
         show("question");
         document.getElementById("q-meta").textContent =
           "Question " + (state.questionIndex + 1) + " of " + state.questionCount;
-        document.getElementById("q-text").textContent = state.question.text;
+        document.getElementById("q-text").innerHTML = md(state.question.text);
         const box = document.getElementById("q-choices");
         box.innerHTML = state.question.choices.map((c, i) =>
           \`<button type="button" class="choice" data-i="\${i}" \${answering ? "disabled" : ""}>

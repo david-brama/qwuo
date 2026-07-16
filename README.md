@@ -65,6 +65,8 @@ PUBLIC_URL=https://YOUR-SUBDOMAIN.trycloudflare.com deno task start
 | `PROJECTOR_PORT` | `3000` | Projector HTTP port (localhost only) |
 | `PLAYER_PORT` | `3001` | Player HTTP port (`0.0.0.0`) |
 | `QUIZ_PATH` | `quiz.json` | Path to quiz content file |
+| `SESSION_PATH` | `.qwuo/session.json` | Local snapshot of live session (phase, participants, answers, scores) |
+| `SESSION_FRESH` | _(unset)_ | Set to `1` / `true` / `yes` to wipe snapshot on boot and start empty LOBBY |
 
 ## Quiz file
 
@@ -101,16 +103,28 @@ LOBBY → QUESTION → CORRECT → EXPLAIN → LEADERBOARD → (next QUESTION | 
 - Duplicate display names allowed
 - No timers; no accounts
 
+## Session persistence
+
+Live session state (phase, question index, participants, scores, per-question answers) is written to a local JSON snapshot after each join, answer, and host advance. Restarting Deno restores that room when the quiz content still matches.
+
+- Default file: `.qwuo/session.json` (override with `SESSION_PATH`)
+- Quiz identity is fingerprinted; if you change `quiz.json` content, an old snapshot is ignored and a new LOBBY starts
+- Fresh room without deleting the file by hand:
+  - Boot: `SESSION_FRESH=1 deno task start`
+  - Runtime: `POST /api/reset` on the **projector** port only (player port returns 403)
+- Snapshot is host-disk only (no cloud sync). Delete the file or reset when the training is done if you do not want scores left on disk
+
 ## Layout
 
 ```
-main.ts                      Entry: load quiz, start both servers
+main.ts                      Entry: load quiz, restore snapshot, start both servers
 quiz.json                    Sample content
 scripts/start-with-tunnel.sh Tunnel + app launcher (deno task start:tunnel)
 src/
   config.ts          Env config
   quiz.ts            Load + validate quiz JSON
-  session.ts         In-memory phase machine, join, answer, scores
+  session.ts         Phase machine, join, answer, scores, hydrate/reset
+  persist.ts         Local JSON snapshot load/save
   http.ts            Projector + player HTTP handlers
   projector_ui.ts    Projector HTML/CSS/JS
   player_ui.ts       Player HTML/CSS/JS
@@ -120,6 +134,6 @@ src/
 
 ## Notes
 
-- Session is in-memory; restarting Deno starts a fresh session
+- Session survives Deno restart via the local snapshot (use `SESSION_FRESH` or projector reset for a clean room)
 - Player clients poll `/api/state` about once per second
-- Participant id is stored in the phone’s `localStorage` so reload reattaches
+- Participant id is stored in the phone’s `localStorage` so reload reattaches — including after server restart when the snapshot still has that id

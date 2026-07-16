@@ -119,7 +119,7 @@ echo "  Player join URL (QR):       ${PUBLIC_URL}"
 echo "  Ctrl+C stops app and tunnel"
 echo
 
-deno run --allow-net --allow-read=quiz.json --allow-env=PUBLIC_URL main.ts &
+deno run --allow-net --allow-write=./.qwuo --allow-read=quiz.json,./.qwuo,$HOME/Library/Caches/deno/npm/registry.npmjs.org/ --allow-env=QUIZ_PATH,PUBLIC_URL,SESSION_PATH,SESSION_FRESH,PROJECTOR_PORT,PLAYER_PORT main.ts &
 DENO_PID=$!
 
 # Wait for Deno; propagate its exit code (cleanup trap stops tunnel)

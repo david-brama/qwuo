@@ -2,7 +2,11 @@
   "tasks": {
     "start": "deno run -A main.ts",
     "start:tunnel": "./scripts/start-with-tunnel.sh",
-    "dev": "deno run -A --watch main.ts"
+    "dev": "deno run -A --watch main.ts",
+    "test": "deno test -A src/"
+  },
+  "imports": {
+    "marked": "npm:marked@15"
   },
   "compilerOptions": {
     "strict": true,

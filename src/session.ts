@@ -25,6 +25,14 @@ export type LeaderboardEntry = {
   rank: number;
 };
 
+/** Serializable runtime state for hydrate/persist (answers as Map). */
+export type SessionHydrate = {
+  phase: Phase;
+  questionIndex: number;
+  nextJoinOrder: number;
+  participants: Participant[];
+};
+
 /** Server-side name cap (matches player input maxlength). */
 export const MAX_NAME_LENGTH = 40;
 export const MAX_PARTICIPANTS = 200;
@@ -43,6 +51,46 @@ export class Session {
 
   constructor(quiz: Quiz) {
     this.quiz = quiz;
+  }
+
+  static fromHydrate(quiz: Quiz, state: SessionHydrate): Session {
+    const session = new Session(quiz);
+    session.phase = state.phase;
+    session.questionIndex = state.questionIndex;
+    session.nextJoinOrder = state.nextJoinOrder;
+    for (const p of state.participants) {
+      session.participants.set(p.id, {
+        id: p.id,
+        name: p.name,
+        joinOrder: p.joinOrder,
+        score: p.score,
+        answers: new Map(p.answers),
+      });
+    }
+    return session;
+  }
+
+  toHydrate(): SessionHydrate {
+    return {
+      phase: this.phase,
+      questionIndex: this.questionIndex,
+      nextJoinOrder: this.nextJoinOrder,
+      participants: [...this.participants.values()].map((p) => ({
+        id: p.id,
+        name: p.name,
+        joinOrder: p.joinOrder,
+        score: p.score,
+        answers: new Map(p.answers),
+      })),
+    };
+  }
+
+  /** Clear room to empty LOBBY (host reset / new training). */
+  reset(): void {
+    this.phase = "LOBBY";
+    this.questionIndex = 0;
+    this.participants.clear();
+    this.nextJoinOrder = 0;
   }
 
   get questionCount(): number {

@@ -1,4 +1,5 @@
 import { PROJECTOR_CSS } from "./styles.ts";
+import { markedBundleScript, MD_RENDER_JS } from "./markdown.ts";
 
 export function projectorHtml(joinUrl: string, qrSvgMarkup: string): string {
   return `<!DOCTYPE html>
@@ -11,7 +12,16 @@ export function projectorHtml(joinUrl: string, qrSvgMarkup: string): string {
 </head>
 <body>
   <div class="shell">
-    <div id="qr-small" class="qr-small" hidden>${qrSvgMarkup}</div>
+    <div id="qr-small" class="qr-small" hidden title="Show join QR" role="button" tabindex="0">${qrSvgMarkup}</div>
+    <div id="qr-modal" class="qr-modal" hidden>
+      <div class="qr-modal-backdrop" data-close></div>
+      <div class="qr-modal-panel" role="dialog" aria-label="Join QR code">
+        <button type="button" class="qr-modal-close" data-close aria-label="Close">×</button>
+        <div class="lobby-sub">Scan to join on your phone</div>
+        <div class="qr-large">${qrSvgMarkup}</div>
+        <div class="join-url">${joinUrl.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")}</div>
+      </div>
+    </div>
     <div class="header">
       <div>
         <div class="phase-label" id="phase-label">LOBBY</div>
@@ -21,10 +31,18 @@ export function projectorHtml(joinUrl: string, qrSvgMarkup: string): string {
     <div class="main" id="main"></div>
     <div class="footer">
       <div class="status-line" id="status"></div>
-      <button type="button" id="next-btn">Next</button>
+      <div class="footer-right">
+        <label class="font-slider" title="Question text size">
+          Text size
+          <input type="range" id="font-scale" min="0.7" max="1.6" step="0.05" value="1" />
+        </label>
+        <button type="button" id="next-btn">Next</button>
+      </div>
     </div>
   </div>
+  <script>${markedBundleScript()}</script>
   <script>
+    ${MD_RENDER_JS}
     const JOIN_URL = ${JSON.stringify(joinUrl)};
     const QR_SVG = ${JSON.stringify(qrSvgMarkup)};
     const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -35,8 +53,46 @@ export function projectorHtml(joinUrl: string, qrSvgMarkup: string): string {
     const statusEl = document.getElementById("status");
     const nextBtn = document.getElementById("next-btn");
     const qrSmall = document.getElementById("qr-small");
+    const qrModal = document.getElementById("qr-modal");
+    const fontScale = document.getElementById("font-scale");
 
     let state = null;
+
+    function openQrModal() {
+      qrModal.hidden = false;
+    }
+
+    function closeQrModal() {
+      qrModal.hidden = true;
+    }
+
+    qrSmall.addEventListener("click", openQrModal);
+    qrSmall.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openQrModal();
+      }
+    });
+    qrModal.addEventListener("click", (e) => {
+      if (e.target.closest("[data-close]")) closeQrModal();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !qrModal.hidden) closeQrModal();
+    });
+
+    function applyFontScale(v) {
+      const n = Math.min(1.6, Math.max(0.7, Number(v) || 1));
+      main.style.setProperty("--q-scale", String(n));
+      fontScale.value = String(n);
+      try { localStorage.setItem("projector-q-scale", String(n)); } catch (_) {}
+    }
+
+    try {
+      const saved = localStorage.getItem("projector-q-scale");
+      if (saved != null) applyFontScale(saved);
+    } catch (_) {}
+
+    fontScale.addEventListener("input", () => applyFontScale(fontScale.value));
 
     function esc(s) {
       return String(s)
@@ -62,6 +118,7 @@ export function projectorHtml(joinUrl: string, qrSvgMarkup: string): string {
 
       const isLobby = state.phase === "LOBBY";
       qrSmall.hidden = isLobby;
+      if (isLobby) closeQrModal();
       main.className = isLobby ? "main lobby-main" : "main";
 
       statusEl.textContent = state.phase === "END"
@@ -84,7 +141,7 @@ export function projectorHtml(joinUrl: string, qrSvgMarkup: string): string {
         const hi = state.phase === "CORRECT" ? q.correct : -1;
         main.innerHTML = \`
           <div class="q-progress">Question \${state.questionIndex + 1} of \${state.questionCount}</div>
-          <div class="q-text">\${esc(q.text)}</div>
+          <div class="q-text">\${md(q.text)}</div>
           <div class="choices">\${renderChoices(q.choices, hi)}</div>
         \`;
         return;
@@ -94,7 +151,7 @@ export function projectorHtml(joinUrl: string, qrSvgMarkup: string): string {
         const q = state.question;
         main.innerHTML = \`
           <div class="q-progress">Explanation · Q\${state.questionIndex + 1}</div>
-          <div class="explain-box">\${esc(q.explain || "No explanation")}</div>
+          <div class="explain-box">\${md(q.explain || "No explanation")}</div>
         \`;
         return;
       }
