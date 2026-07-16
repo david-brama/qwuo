@@ -1,0 +1,48 @@
+{
+  "title": "Workplace Safety Essentials",
+  "questions": [
+    {
+      "text": "What is the first step when you discover a fire in the building?",
+      "choices": [
+        "Try to put it out yourself",
+        "Activate the nearest fire alarm",
+        "Call your manager first",
+        "Finish your current task"
+      ],
+      "correct": 1,
+      "explain": "Always raise the alarm first so others can evacuate. Only attempt to fight a fire if you are trained and it is safe."
+    },
+    {
+      "text": "When should you report a near-miss incident?",
+      "choices": [
+        "Only if someone was injured",
+        "Within 30 days",
+        "As soon as practical, even if no one was hurt",
+        "Never — near-misses do not count"
+      ],
+      "correct": 2,
+      "explain": "Near-misses reveal hazards before they cause harm. Report them promptly so controls can be improved."
+    },
+    {
+      "text": "What does PPE stand for?",
+      "choices": [
+        "Personal Protective Equipment",
+        "Professional Planning Exercise",
+        "Public Policy Exception",
+        "Primary Process Evaluation"
+      ],
+      "correct": 0
+    },
+    {
+      "text": "If you see a spill of unknown liquid, you should:",
+      "choices": [
+        "Clean it with paper towels immediately",
+        "Ignore it if it is small",
+        "Secure the area and report it to the appropriate team",
+        "Pour water on it to dilute it"
+      ],
+      "correct": 2,
+      "explain": "Unknown liquids may be hazardous. Isolate the area and get trained responders involved."
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "tasks": {
+    "start": "deno run -A main.ts",
+    "start:tunnel": "./scripts/start-with-tunnel.sh",
+    "dev": "deno run -A --watch main.ts"
+  },
+  "compilerOptions": {
+    "strict": true,
+    "lib": ["deno.window", "deno.unstable"]
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "version": "5",
+  "specifiers": {
+    "jsr:@libs/qrcode@3": "3.1.0"
+  },
+  "jsr": {
+    "@libs/qrcode@3.1.0": {
+      "integrity": "1d65698d3cbaf1d5e2e0b025f7d8572e8b2c485dcfa81d485e0bf0ce607e9c2b"
+    }
+  }
+}
