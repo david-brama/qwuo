@@ -5,7 +5,13 @@ import {
   snapshotPath,
   writeActiveSessionId,
 } from "./src/config.ts";
-import { loadQuiz } from "./src/quiz.ts";
+import {
+  filterQuestionsByMetadata,
+  formatEmptyFilterDiagnostic,
+  formatFiltersSummary,
+  loadQuiz,
+  type Quiz,
+} from "./src/quiz.ts";
 import { Session } from "./src/session.ts";
 import {
   createPlayerHandler,
@@ -21,15 +27,38 @@ import {
   sessionToSnapshot,
 } from "./src/persist.ts";
 
-const config = loadConfig();
+let config;
+try {
+  config = loadConfig();
+} catch (err) {
+  const msg = err instanceof Error ? err.message : String(err);
+  console.error(`Config failed: ${msg}`);
+  Deno.exit(1);
+}
 
-let quiz;
+let quiz: Quiz;
 try {
   quiz = await loadQuiz(config.quizPath);
 } catch (err) {
   const msg = err instanceof Error ? err.message : String(err);
   console.error(`Quiz load failed: ${msg}`);
   Deno.exit(1);
+}
+
+if (config.filters.length > 0) {
+  const before = quiz.questions.length;
+  const filtered = filterQuestionsByMetadata(quiz.questions, config.filters);
+  const summary = formatFiltersSummary(config.filters);
+  if (filtered.length === 0) {
+    console.error(
+      formatEmptyFilterDiagnostic(before, config.filters, quiz.questions),
+    );
+    Deno.exit(1);
+  }
+  quiz = { ...quiz, questions: filtered };
+  console.log(
+    `Filter: ${before} → ${filtered.length} questions (filters: ${summary})`,
+  );
 }
 
 const fingerprint = await quizFingerprint(quiz);
@@ -63,7 +92,7 @@ let session: Session;
 if (config.sessionFresh) {
   session = new Session(quiz);
 } else {
-  const snapshot = await loadSnapshot(path, fingerprint);
+  const snapshot = await loadSnapshot(path, fingerprint, quiz);
   if (snapshot) {
     session = sessionFromSnapshot(quiz, snapshot);
     console.log(

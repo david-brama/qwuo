@@ -13,6 +13,8 @@ import {
   saveSnapshot,
   sessionFromSnapshot,
   sessionToSnapshot,
+  SNAPSHOT_VERSION,
+  snapshotMatchesQuiz,
 } from "./persist.ts";
 
 const sampleQuiz: Quiz = {
@@ -32,6 +34,11 @@ const sampleQuiz: Quiz = {
     },
   ],
 };
+
+/** Always pick j=0 in Fisher–Yates → deterministic reverse-ish order. */
+function alwaysZero(_max: number): number {
+  return 0;
+}
 
 function tmpPath(name: string): string {
   return `${Deno.makeTempDirSync()}/${name}`;
@@ -54,21 +61,60 @@ Deno.test("quizFingerprint changes when quiz changes", async () => {
   assertNotEquals(a, b);
 });
 
+Deno.test("quizFingerprint ignores metadata-only differences", async () => {
+  const a = await quizFingerprint(sampleQuiz);
+  const withMeta: Quiz = {
+    ...sampleQuiz,
+    metadata: { source: "cms", tags: ["a"] },
+  };
+  const b = await quizFingerprint(withMeta);
+  assertEquals(a, b);
+});
+
+Deno.test("quizFingerprint ignores question metadata-only differences", async () => {
+  const a = await quizFingerprint(sampleQuiz);
+  const withQMeta: Quiz = {
+    ...sampleQuiz,
+    questions: sampleQuiz.questions.map((q, i) =>
+      i === 0 ? { ...q, metadata: { live: true, domain: "X Y" } } : { ...q }
+    ),
+  };
+  const b = await quizFingerprint(withQMeta);
+  assertEquals(a, b);
+});
+
+Deno.test("quizFingerprint ignores session shuffle (canonical quiz only)", async () => {
+  const fpBefore = await quizFingerprint(sampleQuiz);
+  const session = new Session(sampleQuiz, { randomInt: alwaysZero });
+  // Mutating session play order must not affect fingerprint of sampleQuiz
+  const fpAfter = await quizFingerprint(sampleQuiz);
+  assertEquals(fpBefore, fpAfter);
+  // Session's effective order may differ from authoring
+  const eff = session.getEffectiveQuestions()[0]!;
+  assertEquals(eff.choices[eff.correct], sampleQuiz.questions[0]!.choices[1]);
+  assertEquals(await quizFingerprint(session.quiz), fpBefore);
+});
+
 Deno.test("sessionToSnapshot / sessionFromSnapshot round-trip", async () => {
-  const session = new Session(sampleQuiz);
+  const session = new Session(sampleQuiz, { randomInt: alwaysZero });
   const { id } = session.join("Alice");
   session.advance(); // QUESTION
-  session.answer(id, 1); // correct
+  const q0 = session.getEffectiveQuestions()[0]!;
+  const correctIdx = q0.correct;
+  session.answer(id, correctIdx); // correct under effective order
   session.advance(); // CORRECT
 
   const fp = await quizFingerprint(sampleQuiz);
   const snap = sessionToSnapshot(session, fp);
-  assertEquals(snap.version, 1);
+  assertEquals(snap.version, SNAPSHOT_VERSION);
   assertEquals(snap.phase, "CORRECT");
   assertEquals(snap.questionIndex, 0);
   assertEquals(snap.participants.length, 1);
   assertEquals(snap.participants[0].score, 1);
-  assertEquals(snap.participants[0].answers["0"], 1);
+  assertEquals(snap.participants[0].answers["0"], correctIdx);
+  assertEquals(snap.effectiveQuestions.length, 2);
+  assertEquals(snap.effectiveQuestions[0]!.choices, q0.choices);
+  assertEquals(snap.effectiveQuestions[0]!.correct, q0.correct);
 
   const restored = sessionFromSnapshot(sampleQuiz, snap);
   assertEquals(restored.phase, "CORRECT");
@@ -78,39 +124,95 @@ Deno.test("sessionToSnapshot / sessionFromSnapshot round-trip", async () => {
   assertExists(p);
   assertEquals(p.name, "Alice");
   assertEquals(p.score, 1);
-  assertEquals(p.answers.get(0), 1);
+  assertEquals(p.answers.get(0), correctIdx);
   assertEquals(restored.hasAnswered(id, 0), true);
+  assertEquals(
+    restored.getEffectiveQuestions()[0]!.choices,
+    q0.choices,
+  );
 
   // phase machine continues
   assertEquals(restored.advance(), "EXPLAIN");
 });
 
-Deno.test("toHydrate / fromHydrate preserves maps", () => {
-  const session = new Session(sampleQuiz);
+Deno.test("toHydrate / fromHydrate preserves maps and effective order", () => {
+  const session = new Session(sampleQuiz, { randomInt: alwaysZero });
   const { id } = session.join("Bob");
   session.advance();
-  session.answer(id, 0); // wrong
+  const wrongIdx = session.getEffectiveQuestions()[0]!.correct === 0 ? 1 : 0;
+  session.answer(id, wrongIdx);
   const h = session.toHydrate();
   const again = Session.fromHydrate(sampleQuiz, h);
   assertEquals(again.getParticipant(id)?.score, 0);
-  assertEquals(again.getParticipant(id)?.answers.get(0), 0);
+  assertEquals(again.getParticipant(id)?.answers.get(0), wrongIdx);
   assertEquals(again.phase, "QUESTION");
+  assertEquals(
+    again.getEffectiveQuestions()[0]!.choices,
+    session.getEffectiveQuestions()[0]!.choices,
+  );
 });
 
-Deno.test("isValidSnapshot rejects bad shapes", () => {
+Deno.test("isValidSnapshot rejects bad shapes and v1", () => {
   assertEquals(isValidSnapshot(null), false);
   assertEquals(isValidSnapshot({}), false);
   assertEquals(
     isValidSnapshot({
       version: 1,
       quizFingerprint: "abc",
-      phase: "NOPE",
+      phase: "LOBBY",
       questionIndex: 0,
       nextJoinOrder: 0,
       participants: [],
     }),
     false,
   );
+  assertEquals(
+    isValidSnapshot({
+      version: SNAPSHOT_VERSION,
+      quizFingerprint: "abc",
+      phase: "NOPE",
+      questionIndex: 0,
+      nextJoinOrder: 0,
+      participants: [],
+      effectiveQuestions: [
+        { text: "Q", choices: ["A", "B"], correct: 0, explain: "" },
+      ],
+    }),
+    false,
+  );
+  assertEquals(
+    isValidSnapshot({
+      version: SNAPSHOT_VERSION,
+      quizFingerprint: "abc",
+      phase: "LOBBY",
+      questionIndex: 0,
+      nextJoinOrder: 0,
+      participants: [],
+      // missing effectiveQuestions
+    }),
+    false,
+  );
+});
+
+Deno.test("snapshotMatchesQuiz rejects length/multiset mismatch", () => {
+  const session = new Session(sampleQuiz, { randomInt: alwaysZero });
+  const snap = sessionToSnapshot(session, "fp");
+  assertEquals(snapshotMatchesQuiz(snap, sampleQuiz), true);
+
+  const badLen = {
+    ...snap,
+    effectiveQuestions: snap.effectiveQuestions.slice(0, 1),
+  };
+  assertEquals(snapshotMatchesQuiz(badLen, sampleQuiz), false);
+
+  const badChoices = {
+    ...snap,
+    effectiveQuestions: [
+      { ...snap.effectiveQuestions[0]!, choices: ["Z", "Y", "X"] },
+      snap.effectiveQuestions[1]!,
+    ],
+  };
+  assertEquals(snapshotMatchesQuiz(badChoices, sampleQuiz), false);
 });
 
 Deno.test("loadSnapshot: missing file returns null", async () => {
@@ -128,7 +230,7 @@ Deno.test("loadSnapshot: corrupt JSON returns null", async () => {
 
 Deno.test("loadSnapshot: fingerprint mismatch returns null", async () => {
   const path = tmpPath("mismatch.json");
-  const session = new Session(sampleQuiz);
+  const session = new Session(sampleQuiz, { randomInt: alwaysZero });
   session.join("Cara");
   const snap = sessionToSnapshot(session, "right-fp");
   await saveSnapshot(path, snap);
@@ -136,18 +238,52 @@ Deno.test("loadSnapshot: fingerprint mismatch returns null", async () => {
   assertEquals(result, null);
 });
 
+Deno.test("loadSnapshot: v1 snapshot without effectiveQuestions returns null", async () => {
+  const path = tmpPath("v1.json");
+  await Deno.writeTextFile(
+    path,
+    JSON.stringify({
+      version: 1,
+      quizFingerprint: "fp",
+      phase: "LOBBY",
+      questionIndex: 0,
+      nextJoinOrder: 0,
+      participants: [],
+    }),
+  );
+  const result = await loadSnapshot(path, "fp", sampleQuiz);
+  assertEquals(result, null);
+});
+
+Deno.test("loadSnapshot: effective questions mismatch returns null", async () => {
+  const path = tmpPath("eff-mismatch.json");
+  const session = new Session(sampleQuiz, { randomInt: alwaysZero });
+  const fp = await quizFingerprint(sampleQuiz);
+  const snap = sessionToSnapshot(session, fp);
+  // Corrupt choices multiset
+  snap.effectiveQuestions[0] = {
+    ...snap.effectiveQuestions[0]!,
+    choices: ["nope", "nope2", "nope3"],
+    correct: 0,
+  };
+  await saveSnapshot(path, snap);
+  const result = await loadSnapshot(path, fp, sampleQuiz);
+  assertEquals(result, null);
+});
+
 Deno.test("saveSnapshot atomic load round-trip (uuid-named file)", async () => {
   const sessionUuid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
   const path = tmpPath(`${sessionUuid}.json`);
-  const session = new Session(sampleQuiz);
+  const session = new Session(sampleQuiz, { randomInt: alwaysZero });
   const { id } = session.join("Dana");
   session.advance();
-  session.answer(id, 1);
+  const correctIdx = session.getEffectiveQuestions()[0]!.correct;
+  session.answer(id, correctIdx);
   const fp = await quizFingerprint(sampleQuiz);
   const snap = sessionToSnapshot(session, fp);
   await saveSnapshot(path, snap);
 
-  const loaded = await loadSnapshot(path, fp);
+  const loaded = await loadSnapshot(path, fp, sampleQuiz);
   assertExists(loaded);
   assertEquals(loaded.participants[0].id, id);
   assertEquals(loaded.participants[0].score, 1);
@@ -155,11 +291,15 @@ Deno.test("saveSnapshot atomic load round-trip (uuid-named file)", async () => {
 
   const restored = sessionFromSnapshot(sampleQuiz, loaded);
   assertEquals(restored.getParticipant(id)?.score, 1);
+  assertEquals(
+    restored.getEffectiveQuestions()[0]!.choices,
+    session.getEffectiveQuestions()[0]!.choices,
+  );
 });
 
 Deno.test("clearSnapshot removes file", async () => {
   const path = tmpPath("clear-me.json");
-  const session = new Session(sampleQuiz);
+  const session = new Session(sampleQuiz, { randomInt: alwaysZero });
   const fp = await quizFingerprint(sampleQuiz);
   await saveSnapshot(path, sessionToSnapshot(session, fp));
   await clearSnapshot(path);
@@ -173,21 +313,25 @@ Deno.test("join/answer/advance then save → new Session matches; reset clears",
   const path = tmpPath("integration.json");
   const fp = await quizFingerprint(sampleQuiz);
 
-  const live = new Session(sampleQuiz);
+  const live = new Session(sampleQuiz, { randomInt: alwaysZero });
   const alice = live.join("Alice");
   const bob = live.join("Bob");
   live.advance(); // Q0
-  live.answer(alice.id, 1); // +1
-  live.answer(bob.id, 0); // +0
+  const c0 = live.getEffectiveQuestions()[0]!.correct;
+  const wrong0 = c0 === 0 ? 1 : 0;
+  live.answer(alice.id, c0); // +1
+  live.answer(bob.id, wrong0); // +0
   live.advance(); // CORRECT
   live.advance(); // EXPLAIN
   live.advance(); // LEADERBOARD
   live.advance(); // Q1
-  live.answer(alice.id, 0); // +1 → score 2
+  const c1 = live.getEffectiveQuestions()[1]!.correct;
+  live.answer(alice.id, c1); // +1 → score 2
 
+  const liveEff = live.getEffectiveQuestions();
   await saveSnapshot(path, sessionToSnapshot(live, fp));
 
-  const snap = await loadSnapshot(path, fp);
+  const snap = await loadSnapshot(path, fp, sampleQuiz);
   assertExists(snap);
   const restored = sessionFromSnapshot(sampleQuiz, snap);
 
@@ -198,6 +342,8 @@ Deno.test("join/answer/advance then save → new Session matches; reset clears",
   assertEquals(restored.hasAnswered(alice.id, 0), true);
   assertEquals(restored.hasAnswered(alice.id, 1), true);
   assertEquals(restored.hasAnswered(bob.id, 1), false);
+  assertEquals(restored.getEffectiveQuestions()[0]!.choices, liveEff[0]!.choices);
+  assertEquals(restored.getEffectiveQuestions()[1]!.choices, liveEff[1]!.choices);
 
   // leaderboard order
   const board = restored.leaderboard();
@@ -212,7 +358,7 @@ Deno.test("join/answer/advance then save → new Session matches; reset clears",
 });
 
 Deno.test("Session.reset empties room", () => {
-  const session = new Session(sampleQuiz);
+  const session = new Session(sampleQuiz, { randomInt: alwaysZero });
   session.join("Eve");
   session.advance();
   session.reset();

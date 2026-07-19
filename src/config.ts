@@ -1,3 +1,8 @@
+import {
+  parseFilterEntry,
+  type MetadataFilter,
+} from "./quiz.ts";
+
 export type Config = {
   publicUrl: string | null;
   projectorPort: number;
@@ -9,6 +14,8 @@ export type Config = {
   sessionId: string | null;
   /** When true, ignore/delete snapshot on boot and start empty LOBBY. */
   sessionFresh: boolean;
+  /** Startup metadata filters (env then CLI); empty = all questions. */
+  filters: MetadataFilter[];
 };
 
 const UUID_RE =
@@ -62,7 +69,74 @@ export async function writeActiveSessionId(
   await Deno.writeTextFile(pointerPath(sessionsDir), sessionId + "\n");
 }
 
-export function loadConfig(): Config {
+/**
+ * Parse `QUIZ_FILTER` env: `;`-separated `key=value` segments.
+ * Segment edges trimmed; empty segments ignored.
+ */
+export function parseQuizFilterEnv(raw: string | undefined): MetadataFilter[] {
+  if (raw === undefined) return [];
+  const out: MetadataFilter[] = [];
+  for (const segment of raw.split(";")) {
+    const trimmed = segment.trim();
+    if (!trimmed) continue;
+    out.push(parseFilterEntry(trimmed));
+  }
+  return out;
+}
+
+/**
+ * Parse app CLI args for repeatable `--filter` / `--filter=`.
+ * Rejects unknown operands. Does not re-join shell-split tokens.
+ */
+export function parseFilterCliArgs(args: string[]): MetadataFilter[] {
+  const out: MetadataFilter[] = [];
+  let i = 0;
+  while (i < args.length) {
+    const a = args[i]!;
+    if (a === "--") {
+      i++;
+      continue;
+    }
+    if (a.startsWith("--filter=")) {
+      const rest = a.slice("--filter=".length);
+      out.push(parseFilterEntry(rest));
+      i++;
+      continue;
+    }
+    if (a === "--filter") {
+      const next = args[i + 1];
+      if (next === undefined || next.startsWith("-")) {
+        throw new Error(
+          `CLI --filter requires a key=value argument (got ${
+            next === undefined ? "end of args" : next
+          })`,
+        );
+      }
+      out.push(parseFilterEntry(next));
+      i += 2;
+      continue;
+    }
+    throw new Error(
+      `Unknown CLI argument: ${a}\n` +
+        `Usage: --filter key=value (repeatable). Quote values with spaces, e.g. --filter "domain=Tool Design & MCP Integration"`,
+    );
+  }
+  return out;
+}
+
+/**
+ * Merge env filters then CLI filters (same AND/OR rules over combined list).
+ */
+export function resolveFilters(
+  envRaw: string | undefined,
+  args: string[],
+): MetadataFilter[] {
+  return [...parseQuizFilterEnv(envRaw), ...parseFilterCliArgs(args)];
+}
+
+export function loadConfig(
+  options: { args?: string[]; envFilter?: string | undefined } = {},
+): Config {
   const publicUrl = Deno.env.get("PUBLIC_URL")?.trim() || null;
   const rawId = Deno.env.get("SESSION_ID")?.trim() || null;
   const sessionId = rawId && isValidSessionId(rawId) ? rawId : null;
@@ -71,6 +145,13 @@ export function loadConfig(): Config {
       `SESSION_ID is not a valid UUID (${rawId}); ignoring and resolving via pointer/mint`,
     );
   }
+
+  const envFilter = options.envFilter !== undefined
+    ? options.envFilter
+    : Deno.env.get("QUIZ_FILTER");
+  const args = options.args ?? Deno.args;
+  const filters = resolveFilters(envFilter, args);
+
   return {
     publicUrl,
     projectorPort: envPort("PROJECTOR_PORT", 3000),
@@ -79,6 +160,7 @@ export function loadConfig(): Config {
     sessionsDir: Deno.env.get("SESSIONS_DIR")?.trim() || ".qwuo",
     sessionId,
     sessionFresh: envTruthy("SESSION_FRESH"),
+    filters,
   };
 }
 

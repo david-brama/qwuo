@@ -43,8 +43,8 @@ The projector client MUST call host APIs under `/s/{sessionId}/api/…` (state, 
 ### Requirement: Phase-specific main content
 The projector UI MUST show phase-appropriate main content:
 
-- QUESTION: question text and all choices without indicating the correct answer
-- CORRECT: same content with the correct choice highlighted
+- QUESTION: question text and all choices in the session's effective choice order without indicating the correct answer
+- CORRECT: same content and order with the correct choice highlighted using the session's remapped correct index
 - EXPLAIN: explanation text for the current question (or a "No explanation" placeholder if empty)
 - LEADERBOARD: ranked participant names and scores
 - END: session complete indication
@@ -60,6 +60,10 @@ The projector UI MUST show phase-appropriate main content:
 #### Scenario: Empty explanation
 - **WHEN** the projector phase is EXPLAIN and the question has no explanation text
 - **THEN** the UI shows a "No explanation" placeholder
+
+#### Scenario: Choices match session order
+- **WHEN** the projector phase is QUESTION or CORRECT
+- **THEN** choices are shown in the order returned by projector state for the current question (shared with players)
 
 ### Requirement: Host advances with Next button
 The projector UI MUST provide a visible **Next** button that advances the session phase. Keyboard shortcuts are not required.

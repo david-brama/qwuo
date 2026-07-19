@@ -20,6 +20,11 @@
       "items": {
         "$ref": "#/$defs/question"
       }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Optional authoring bag for non-gameplay data (tags, source IDs, CMS fields). Arbitrary nested JSON values allowed. Omitted or null → absent at load."
     }
   },
   "$defs": {
@@ -52,6 +57,11 @@
         "explain": {
           "type": "string",
           "description": "Optional explanation after reveal. Omitted or null → empty string at load. Markdown is supported."
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Optional authoring bag per question (domain, use-case, live, tags, …). Arbitrary nested JSON values allowed. Omitted or null → absent at load. Used by startup filters; not part of quiz fingerprint."
         }
       }
     }

@@ -85,11 +85,52 @@ PUBLIC_URL=https://YOUR-SUBDOMAIN.trycloudflare.com deno task start
 | `PROJECTOR_PORT` | `3000` | Projector HTTP port (localhost only) |
 | `PLAYER_PORT` | `3001` | Player HTTP port (`127.0.0.1` only; expose via cloudflared) |
 | `QUIZ_PATH` | `quiz.json` | Path to quiz content file |
+| `QUIZ_FILTER` | _(unset)_ | Optional `;`-separated metadata filters (`key=value`). See [Question filters](#question-filters) |
 | `SESSIONS_DIR` | `.qwuo` | Directory for session snapshots (`{uuid}.json`) and active pointer (`current`) |
 | `SESSION_ID` | _(unset)_ | Optional fixed session UUID; otherwise restore via pointer or mint a new one |
 | `SESSION_FRESH` | _(unset)_ | Set to `1` / `true` / `yes` to wipe active snapshot on boot and start empty LOBBY |
 
 `SESSION_PATH` is removed. Old `.qwuo/session.json` is not loaded; snapshots are now `{SESSIONS_DIR}/{uuid}.json`.
+
+### Question filters
+
+At startup you can keep only questions whose per-question `metadata` matches one or more filters. Filters do **not** rewrite the quiz file; they only shrink the in-memory bank for that process.
+
+**Sources** (merged: env first, then CLI):
+
+- Env: `QUIZ_FILTER` — `;`-separated `key=value` segments
+- CLI: repeatable `--filter key=value` or `--filter=key=value`
+
+**Semantics:** **AND** across different keys; **OR** for multiple values of the same key.
+
+**Quoting (required for spaces and `&`):** Metadata values often contain spaces (e.g. domain names). The shell splits unquoted words **before** the app runs; the app does **not** reassemble split tokens. Always quote values that contain spaces or shell-special characters:
+
+```bash
+# Live questions only
+deno run -P main.ts -- --filter live=true
+
+# One domain (spaces + &)
+deno run -P main.ts -- --filter "domain=Tool Design & MCP Integration"
+
+# live AND a use-case (key is use-case with a hyphen, not use_case)
+deno run -P main.ts -- \
+  --filter live=true \
+  --filter "use-case=Customer Support Resolution Agent"
+
+# live AND (domain A OR domain B)
+deno run -P main.ts -- \
+  --filter live=true \
+  --filter "domain=Tool Design & MCP Integration" \
+  --filter "domain=Prompt Engineering & Structured Output"
+
+# Env form (quote the whole assignment)
+QUIZ_FILTER='live=true;domain=Tool Design & MCP Integration' deno run -P main.ts
+
+# Tunnel script forwards args
+./scripts/start-with-tunnel.sh -- --filter live=true --filter "domain=Tool Design & MCP Integration"
+```
+
+If filters match **zero** questions, or a filter is malformed / an unknown CLI flag appears, the process exits with a non-zero status and does not start servers.
 
 ## Quiz file
 
@@ -103,7 +144,12 @@ Edit `quiz.json` (or point `QUIZ_PATH` at another file):
       "text": "Question text?",
       "choices": ["A", "B", "C"],
       "correct": 0,
-      "explain": "Optional explanation shown after the reveal."
+      "explain": "Optional explanation shown after the reveal.",
+      "metadata": {
+        "id": "Q1",
+        "live": true,
+        "domain": "Tool Design & MCP Integration"
+      }
     }
   ]
 }
@@ -113,6 +159,8 @@ Edit `quiz.json` (or point `QUIZ_PATH` at another file):
 - At least 2 choices per question
 - `text` and `explain` support Markdown (GFM); `quiz.json` is trusted source, rendered as HTML on projector/player
 - `explain` is optional (projector shows “No explanation” if missing)
+- Optional root `metadata` and per-question `metadata` objects hold authoring data (tags, domain, `live`, …). They are retained on load and used by [question filters](#question-filters); they are not shown on player/projector and do not change scoring
+- Filters never rewrite the quiz file on disk
 - Invalid or missing file → process exits with a clear error
 
 ## Session flow

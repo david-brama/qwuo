@@ -34,6 +34,7 @@ const config: Config = {
   sessionsDir: ".qwuo",
   sessionId: SESSION_ID,
   sessionFresh: false,
+  filters: [],
 };
 
 function api(path: string): string {

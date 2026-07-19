@@ -4,8 +4,10 @@
 #   ./scripts/start-with-tunnel.sh
 #   deno task start:tunnel
 #   PUBLIC_URL=https://… ./scripts/start-with-tunnel.sh   # skip tunnel
-# Env: PLAYER_PORT (3001), PROJECTOR_PORT (3000), PUBLIC_URL, QUIZ_PATH, URL_WAIT_SECS (30)
+# Env: PLAYER_PORT (3001), PROJECTOR_PORT (3000), PUBLIC_URL, QUIZ_PATH, QUIZ_FILTER, URL_WAIT_SECS (30)
 #      TUNNEL_MODE (docker|native|auto) — default auto: docker compose, else native cloudflared
+# Extra args are forwarded to the app (quote spaced filters), e.g.:
+#   ./scripts/start-with-tunnel.sh -- --filter live=true --filter "domain=Tool Design & MCP Integration"
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -216,7 +218,7 @@ echo "  Player join URL (QR):       ${PUBLIC_URL}"
 echo "  Ctrl+C stops app and tunnel"
 echo
 
-deno run -P main.ts &
+deno run -P main.ts -- "$@" &
 DENO_PID=$!
 
 # Wait for Deno; propagate its exit code (cleanup trap stops tunnel)

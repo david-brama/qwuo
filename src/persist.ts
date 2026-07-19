@@ -1,15 +1,23 @@
-import type { Quiz } from "./quiz.ts";
+import type { Question, Quiz } from "./quiz.ts";
 import { Session, type Phase } from "./session.ts";
 
-export const SNAPSHOT_VERSION = 1 as const;
+export const SNAPSHOT_VERSION = 2 as const;
 
 export type SnapshotParticipant = {
   id: string;
   name: string;
   joinOrder: number;
   score: number;
-  /** questionIndex (string key) -> choiceIndex */
+  /** questionIndex (string key) -> choiceIndex (effective play order) */
   answers: Record<string, number>;
+};
+
+/** Effective play question fields required for restore. */
+export type SnapshotEffectiveQuestion = {
+  text: string;
+  choices: string[];
+  correct: number;
+  explain: string;
 };
 
 export type SessionSnapshot = {
@@ -19,6 +27,8 @@ export type SessionSnapshot = {
   questionIndex: number;
   nextJoinOrder: number;
   participants: SnapshotParticipant[];
+  /** Session play order; required for v2. */
+  effectiveQuestions: SnapshotEffectiveQuestion[];
 };
 
 const PHASES: ReadonlySet<string> = new Set([
@@ -30,7 +40,7 @@ const PHASES: ReadonlySet<string> = new Set([
   "END",
 ]);
 
-/** Deterministic SHA-256 hex of canonical quiz JSON. */
+/** Deterministic SHA-256 hex of canonical quiz JSON (authoring order). */
 export async function quizFingerprint(quiz: Quiz): Promise<string> {
   const payload = JSON.stringify({
     title: quiz.title,
@@ -72,6 +82,12 @@ export function sessionToSnapshot(
         answers,
       };
     }),
+    effectiveQuestions: state.effectiveQuestions.map((q) => ({
+      text: q.text,
+      choices: [...q.choices],
+      correct: q.correct,
+      explain: q.explain,
+    })),
   };
 }
 
@@ -79,6 +95,11 @@ export function sessionFromSnapshot(
   quiz: Quiz,
   snapshot: SessionSnapshot,
 ): Session {
+  if (snapshot.effectiveQuestions.length !== quiz.questions.length) {
+    throw new Error(
+      `Snapshot effectiveQuestions length mismatch: ${snapshot.effectiveQuestions.length} vs ${quiz.questions.length}`,
+    );
+  }
   const participants = snapshot.participants.map((p) => {
     const answers = new Map<number, number>();
     for (const [k, v] of Object.entries(p.answers)) {
@@ -95,11 +116,20 @@ export function sessionFromSnapshot(
       answers,
     };
   });
+  const effectiveQuestions: Question[] = snapshot.effectiveQuestions.map(
+    (q) => ({
+      text: q.text,
+      choices: [...q.choices],
+      correct: q.correct,
+      explain: q.explain,
+    }),
+  );
   return Session.fromHydrate(quiz, {
     phase: snapshot.phase,
     questionIndex: snapshot.questionIndex,
     nextJoinOrder: snapshot.nextJoinOrder,
     participants,
+    effectiveQuestions,
   });
 }
 
@@ -126,6 +156,55 @@ export function isValidSnapshot(data: unknown): data is SessionSnapshot {
   for (const p of o.participants) {
     if (!isValidSnapshotParticipant(p)) return false;
   }
+  if (!Array.isArray(o.effectiveQuestions) || o.effectiveQuestions.length === 0) {
+    return false;
+  }
+  for (const q of o.effectiveQuestions) {
+    if (!isValidEffectiveQuestion(q)) return false;
+  }
+  return true;
+}
+
+/**
+ * Validate snapshot against a loaded quiz: effective question count and
+ * choice counts must match; each correct index in range.
+ * Used when loading so a corrupt order cannot restore under a new shuffle.
+ */
+export function snapshotMatchesQuiz(
+  snapshot: SessionSnapshot,
+  quiz: Quiz,
+): boolean {
+  if (snapshot.effectiveQuestions.length !== quiz.questions.length) {
+    return false;
+  }
+  for (let i = 0; i < quiz.questions.length; i++) {
+    const eff = snapshot.effectiveQuestions[i]!;
+    const can = quiz.questions[i]!;
+    if (eff.choices.length !== can.choices.length) return false;
+    // Same multiset of choice strings (order may differ)
+    const a = [...eff.choices].sort();
+    const b = [...can.choices].sort();
+    for (let c = 0; c < a.length; c++) {
+      if (a[c] !== b[c]) return false;
+    }
+    if (eff.text !== can.text) return false;
+  }
+  return true;
+}
+
+function isValidEffectiveQuestion(q: unknown): q is SnapshotEffectiveQuestion {
+  if (q === null || typeof q !== "object" || Array.isArray(q)) return false;
+  const o = q as Record<string, unknown>;
+  if (typeof o.text !== "string") return false;
+  if (!Array.isArray(o.choices) || o.choices.length < 2) return false;
+  for (const c of o.choices) {
+    if (typeof c !== "string" || !c.trim()) return false;
+  }
+  if (typeof o.correct !== "number" || !Number.isInteger(o.correct)) {
+    return false;
+  }
+  if (o.correct < 0 || o.correct >= o.choices.length) return false;
+  if (typeof o.explain !== "string") return false;
   return true;
 }
 
@@ -155,12 +234,13 @@ function isValidSnapshotParticipant(p: unknown): p is SnapshotParticipant {
 }
 
 /**
- * Load snapshot from disk. Returns null if missing, corrupt, or quiz mismatch.
- * Never throws for those cases.
+ * Load snapshot from disk. Returns null if missing, corrupt, quiz mismatch,
+ * or effective order unusable. Never throws for those cases.
  */
 export async function loadSnapshot(
   path: string,
   expectedFingerprint: string,
+  quiz?: Quiz,
 ): Promise<SessionSnapshot | null> {
   let text: string;
   try {
@@ -187,6 +267,13 @@ export async function loadSnapshot(
   if (data.quizFingerprint !== expectedFingerprint) {
     console.error(
       `Session snapshot quiz mismatch (${path}); starting fresh`,
+    );
+    return null;
+  }
+
+  if (quiz !== undefined && !snapshotMatchesQuiz(data, quiz)) {
+    console.error(
+      `Session snapshot effective questions mismatch (${path}); starting fresh`,
     );
     return null;
   }

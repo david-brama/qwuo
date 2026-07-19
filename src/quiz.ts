@@ -3,15 +3,283 @@ export type Question = {
   choices: string[];
   correct: number;
   explain: string;
+  metadata?: Record<string, unknown>;
 };
 
 export type Quiz = {
   title: string;
   questions: Question[];
+  metadata?: Record<string, unknown>;
 };
+
+/** One metadata filter entry: `key=value` after parse. */
+export type MetadataFilter = {
+  key: string;
+  value: string;
+};
+
+/** Returns an integer in `[0, maxExclusive)`. */
+export type RandomInt = (maxExclusive: number) => number;
+
+/** Unbiased integer in `[0, maxExclusive)` via `crypto.getRandomValues`. */
+export function cryptoRandomInt(maxExclusive: number): number {
+  if (!Number.isInteger(maxExclusive) || maxExclusive <= 0) {
+    throw new Error("maxExclusive must be a positive integer");
+  }
+  const buf = new Uint32Array(1);
+  // Rejection sampling avoids modulo bias
+  const limit = Math.floor(0x1_0000_0000 / maxExclusive) * maxExclusive;
+  let x: number;
+  do {
+    crypto.getRandomValues(buf);
+    x = buf[0]!;
+  } while (x >= limit);
+  return x % maxExclusive;
+}
+
+function parseMetadataField(
+  raw: unknown,
+  loc: string,
+): Record<string, unknown> | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`${loc}: "metadata" must be a JSON object if present`);
+  }
+  return { ...(raw as Record<string, unknown>) };
+}
+
+/** Deep-copy a question (new choices array; shallow-copy metadata bag). */
+export function copyQuestion(q: Question): Question {
+  const out: Question = {
+    text: q.text,
+    choices: [...q.choices],
+    correct: q.correct,
+    explain: q.explain,
+  };
+  if (q.metadata !== undefined) {
+    out.metadata = { ...q.metadata };
+  }
+  return out;
+}
+
+/**
+ * Fisher–Yates shuffle of choice order; remaps `correct` to the same choice
+ * text by original index (safe with duplicate labels). Does not mutate input.
+ * Preserves `metadata` when present.
+ */
+export function shuffleQuestionChoices(
+  question: Question,
+  randomInt: RandomInt = cryptoRandomInt,
+): Question {
+  const n = question.choices.length;
+  const order = Array.from({ length: n }, (_, i) => i);
+  for (let i = n - 1; i > 0; i--) {
+    const j = randomInt(i + 1);
+    if (!Number.isInteger(j) || j < 0 || j > i) {
+      throw new Error(
+        `randomInt(${i + 1}) must return an integer in [0, ${i}], got ${j}`,
+      );
+    }
+    const tmp = order[i]!;
+    order[i] = order[j]!;
+    order[j] = tmp;
+  }
+  const choices = order.map((i) => question.choices[i]!);
+  const correct = order.indexOf(question.correct);
+  const out: Question = {
+    text: question.text,
+    choices,
+    correct,
+    explain: question.explain,
+  };
+  if (question.metadata !== undefined) {
+    out.metadata = { ...question.metadata };
+  }
+  return out;
+}
 
 function isNonEmptyString(v: unknown): v is string {
   return typeof v === "string" && v.trim().length > 0;
+}
+
+/**
+ * Parse a single `key=value` filter entry.
+ * Splits on the first `=`; edge-trims key and value; preserves internal spaces.
+ */
+export function parseFilterEntry(raw: string): MetadataFilter {
+  const eq = raw.indexOf("=");
+  if (eq < 0) {
+    throw new Error(
+      `Invalid filter "${raw}": expected key=value (missing "=")`,
+    );
+  }
+  const key = raw.slice(0, eq).trim();
+  const value = raw.slice(eq + 1).trim();
+  if (!key) {
+    throw new Error(
+      `Invalid filter "${raw}": key must be non-empty before "="`,
+    );
+  }
+  return { key, value };
+}
+
+/** True if a scalar field matches the filter value string. */
+function scalarMatches(field: unknown, filterValue: string): boolean {
+  if (typeof field === "string") {
+    return field === filterValue;
+  }
+  if (typeof field === "boolean") {
+    return (
+      (filterValue === "true" && field === true) ||
+      (filterValue === "false" && field === false)
+    );
+  }
+  if (typeof field === "number") {
+    if (!Number.isFinite(field)) return false;
+    if (filterValue === String(field)) return true;
+    const n = Number(filterValue);
+    return Number.isFinite(n) && n === field;
+  }
+  if (field === null) {
+    return filterValue === "null";
+  }
+  return false;
+}
+
+/** True if metadata[key] matches one filter value under design rules. */
+function fieldMatchesFilterValue(
+  field: unknown,
+  filterValue: string,
+): boolean {
+  if (Array.isArray(field)) {
+    for (const el of field) {
+      if (scalarMatches(el, filterValue)) return true;
+    }
+    return false;
+  }
+  if (field !== null && typeof field === "object") {
+    return false;
+  }
+  return scalarMatches(field, filterValue);
+}
+
+/**
+ * Filter questions by metadata entries.
+ * AND across different keys; OR within the same key.
+ * Missing metadata/key does not match. Preserves relative order.
+ * Empty `filters` returns a shallow copy of the questions array (all kept).
+ */
+export function filterQuestionsByMetadata(
+  questions: Question[],
+  filters: MetadataFilter[],
+): Question[] {
+  if (filters.length === 0) return [...questions];
+
+  const byKey = new Map<string, string[]>();
+  for (const f of filters) {
+    const list = byKey.get(f.key);
+    if (list) list.push(f.value);
+    else byKey.set(f.key, [f.value]);
+  }
+
+  return questions.filter((q) => {
+    const meta = q.metadata;
+    if (!meta) return false;
+    for (const [key, values] of byKey) {
+      if (!(key in meta)) return false;
+      const field = meta[key];
+      const ok = values.some((v) => fieldMatchesFilterValue(field, v));
+      if (!ok) return false;
+    }
+    return true;
+  });
+}
+
+/** Human-readable filter list for logs/errors. */
+export function formatFiltersSummary(filters: MetadataFilter[]): string {
+  return filters.map((f) => `${f.key}=${f.value}`).join("; ");
+}
+
+/** Distinct top-level metadata keys present on any question (sorted). */
+export function collectQuestionMetadataKeys(questions: Question[]): string[] {
+  const keys = new Set<string>();
+  for (const q of questions) {
+    if (!q.metadata) continue;
+    for (const k of Object.keys(q.metadata)) keys.add(k);
+  }
+  return [...keys].sort();
+}
+
+/**
+ * Normalize for fuzzy key comparison: lowercase, treat `_` and `-` as the same.
+ */
+function normalizeMetaKey(key: string): string {
+  return key.toLowerCase().replace(/_/g, "-");
+}
+
+/**
+ * For filter keys missing from the bank, suggest close available keys
+ * (e.g. `use_case` → `use-case`).
+ */
+export function suggestMetadataKeys(
+  filterKeys: string[],
+  availableKeys: string[],
+): { missing: string; suggestions: string[] }[] {
+  const available = availableKeys;
+  const out: { missing: string; suggestions: string[] }[] = [];
+  for (const fk of filterKeys) {
+    if (available.includes(fk)) continue;
+    const norm = normalizeMetaKey(fk);
+    const suggestions = available.filter(
+      (ak) => normalizeMetaKey(ak) === norm || normalizeMetaKey(ak).includes(norm) ||
+        norm.includes(normalizeMetaKey(ak)),
+    );
+    // Prefer exact hyphen/underscore variants first
+    suggestions.sort((a, b) => {
+      const aExact = normalizeMetaKey(a) === norm ? 0 : 1;
+      const bExact = normalizeMetaKey(b) === norm ? 0 : 1;
+      return aExact - bExact || a.localeCompare(b);
+    });
+    out.push({ missing: fk, suggestions: [...new Set(suggestions)] });
+  }
+  return out;
+}
+
+/**
+ * Build a multi-line empty-filter diagnostic for stderr.
+ */
+export function formatEmptyFilterDiagnostic(
+  questionCount: number,
+  filters: MetadataFilter[],
+  questions: Question[],
+): string {
+  const summary = formatFiltersSummary(filters);
+  const lines = [
+    `Quiz filter matched 0 of ${questionCount} questions (filters: ${summary})`,
+  ];
+  const available = collectQuestionMetadataKeys(questions);
+  if (available.length > 0) {
+    lines.push(`Available metadata keys: ${available.join(", ")}`);
+  } else {
+    lines.push("No questions in this file define a metadata object.");
+  }
+  const filterKeys = [...new Set(filters.map((f) => f.key))];
+  const hints = suggestMetadataKeys(filterKeys, available);
+  for (const h of hints) {
+    if (h.suggestions.length > 0) {
+      lines.push(
+        `Unknown key "${h.missing}" — did you mean: ${h.suggestions.join(", ")}?`,
+      );
+    } else if (!available.includes(h.missing)) {
+      lines.push(
+        `Unknown key "${h.missing}" — not present on any question metadata.`,
+      );
+    }
+  }
+  lines.push(
+    'Tip: keys/values are exact (use-case not use_case). Quote spaced values: --filter "use-case=Customer Support Resolution Agent"',
+  );
+  return lines.join("\n");
 }
 
 export function validateQuiz(data: unknown, path: string): Quiz {
@@ -27,6 +295,8 @@ export function validateQuiz(data: unknown, path: string): Quiz {
   if (!Array.isArray(root.questions) || root.questions.length === 0) {
     throw new Error(`${path}: "questions" must be a non-empty array`);
   }
+
+  const metadata = parseMetadataField(root.metadata, path);
 
   const questions: Question[] = [];
 
@@ -73,15 +343,24 @@ export function validateQuiz(data: unknown, path: string): Quiz {
       explain = qobj.explain.trim();
     }
 
-    questions.push({
+    const qMeta = parseMetadataField(qobj.metadata, loc);
+    const question: Question = {
       text: qobj.text.trim(),
       choices,
       correct: qobj.correct,
       explain,
-    });
+    };
+    if (qMeta !== undefined) {
+      question.metadata = qMeta;
+    }
+    questions.push(question);
   }
 
-  return { title: root.title.trim(), questions };
+  const quiz: Quiz = { title: root.title.trim(), questions };
+  if (metadata !== undefined) {
+    quiz.metadata = metadata;
+  }
+  return quiz;
 }
 
 export async function loadQuiz(path: string): Promise<Quiz> {

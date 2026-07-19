@@ -12,6 +12,7 @@
       "read": ["quiz.json", "./.qwuo", "./node_modules"],
       "env": [
         "QUIZ_PATH",
+        "QUIZ_FILTER",
         "PUBLIC_URL",
         "SESSIONS_DIR",
         "SESSION_ID",

@@ -1,4 +1,10 @@
-import type { Quiz } from "./quiz.ts";
+import {
+  copyQuestion,
+  shuffleQuestionChoices,
+  type Question,
+  type Quiz,
+  type RandomInt,
+} from "./quiz.ts";
 
 export type Phase =
   | "LOBBY"
@@ -13,7 +19,7 @@ export type Participant = {
   name: string;
   joinOrder: number;
   score: number;
-  /** questionIndex -> choiceIndex */
+  /** questionIndex -> choiceIndex (effective play order) */
   answers: Map<number, number>;
 };
 
@@ -31,6 +37,8 @@ export type SessionHydrate = {
   questionIndex: number;
   nextJoinOrder: number;
   participants: Participant[];
+  /** Effective play questions (shuffled choices + remapped correct). */
+  effectiveQuestions: Question[];
 };
 
 /** Server-side name cap (matches player input maxlength). */
@@ -42,19 +50,66 @@ export function normalizeParticipantName(name: string): string {
   return name.replace(/[\u0000-\u001F\u007F]/g, "").trim();
 }
 
+function cloneQuestions(questions: Question[]): Question[] {
+  return questions.map(copyQuestion);
+}
+
+export type SessionOptions = {
+  /** Injectable RNG for tests; used when building a fresh shuffle. */
+  randomInt?: RandomInt;
+  /**
+   * When set, use these play questions instead of shuffling (restore path).
+   * Must match quiz.questions.length.
+   */
+  effectiveQuestions?: Question[];
+};
+
 export class Session {
+  /**
+   * Canonical loaded quiz (authoring order). Used for title/metadata and
+   * must remain unshuffled for fingerprinting by callers.
+   */
   readonly quiz: Quiz;
+  /** Playable questions for this room (shuffled choices). */
+  private playQuestions: Question[];
   phase: Phase = "LOBBY";
   questionIndex = 0;
   private participants = new Map<string, Participant>();
   private nextJoinOrder = 0;
+  private readonly randomInt?: RandomInt;
 
-  constructor(quiz: Quiz) {
+  constructor(quiz: Quiz, options?: SessionOptions) {
     this.quiz = quiz;
+    this.randomInt = options?.randomInt;
+    if (options?.effectiveQuestions) {
+      if (options.effectiveQuestions.length !== quiz.questions.length) {
+        throw new Error(
+          `effectiveQuestions length ${options.effectiveQuestions.length} != quiz ${quiz.questions.length}`,
+        );
+      }
+      this.playQuestions = cloneQuestions(options.effectiveQuestions);
+    } else {
+      this.playQuestions = this.buildShuffledPlayQuestions();
+    }
   }
 
+  private buildShuffledPlayQuestions(): Question[] {
+    const rng = this.randomInt;
+    return this.quiz.questions.map((q) =>
+      rng
+        ? shuffleQuestionChoices(q, rng)
+        : shuffleQuestionChoices(q)
+    );
+  }
+
+  /**
+   * Restore without reshuffling. `state.effectiveQuestions` must align with
+   * the loaded quiz (same length); caller/persist validates shape.
+   */
   static fromHydrate(quiz: Quiz, state: SessionHydrate): Session {
-    const session = new Session(quiz);
+    const session = new Session(quiz, {
+      effectiveQuestions: state.effectiveQuestions,
+    });
     session.phase = state.phase;
     session.questionIndex = state.questionIndex;
     session.nextJoinOrder = state.nextJoinOrder;
@@ -82,23 +137,30 @@ export class Session {
         score: p.score,
         answers: new Map(p.answers),
       })),
+      effectiveQuestions: cloneQuestions(this.playQuestions),
     };
   }
 
-  /** Clear room to empty LOBBY (host reset / new training). */
+  /** Clear room to empty LOBBY (host reset / new training). Fresh shuffle. */
   reset(): void {
     this.phase = "LOBBY";
     this.questionIndex = 0;
     this.participants.clear();
     this.nextJoinOrder = 0;
+    this.playQuestions = this.buildShuffledPlayQuestions();
   }
 
   get questionCount(): number {
-    return this.quiz.questions.length;
+    return this.playQuestions.length;
   }
 
-  get currentQuestion() {
-    return this.quiz.questions[this.questionIndex];
+  get currentQuestion(): Question {
+    return this.playQuestions[this.questionIndex]!;
+  }
+
+  /** Effective play questions (copy). */
+  getEffectiveQuestions(): Question[] {
+    return cloneQuestions(this.playQuestions);
   }
 
   join(name: string): { id: string; name: string } {
