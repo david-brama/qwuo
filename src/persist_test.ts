@@ -83,6 +83,16 @@ Deno.test("quizFingerprint ignores question metadata-only differences", async ()
   assertEquals(a, b);
 });
 
+Deno.test("quizFingerprint ignores config-only differences", async () => {
+  const a = await quizFingerprint(sampleQuiz);
+  const withConfig: Quiz = {
+    ...sampleQuiz,
+    config: { slideMetadataKeys: ["domain", "use-case"] },
+  };
+  const b = await quizFingerprint(withConfig);
+  assertEquals(a, b);
+});
+
 Deno.test("quizFingerprint ignores session shuffle (canonical quiz only)", async () => {
   const fpBefore = await quizFingerprint(sampleQuiz);
   const session = new Session(sampleQuiz, { randomInt: alwaysZero });

@@ -51,6 +51,109 @@ Deno.test("projector and player state share effective choice order", () => {
   );
 });
 
+Deno.test("projectorState slideMetadata follows config order and skips missing", () => {
+  const quiz: Quiz = {
+    title: "Meta slides",
+    config: { slideMetadataKeys: ["use-case", "domain", "task-statement"] },
+    questions: [
+      {
+        text: "Q1?",
+        choices: ["A", "B"],
+        correct: 0,
+        explain: "e",
+        metadata: {
+          domain: "Tool Design",
+          "use-case": "Support",
+          live: true,
+          tags: ["x"],
+        },
+      },
+    ],
+  };
+  const session = new Session(quiz, { randomInt: alwaysZero });
+  session.advance();
+  const proj = session.projectorState();
+  assertEquals(proj.question!.slideMetadata, [
+    { key: "use-case", value: "Support" },
+    { key: "domain", value: "Tool Design" },
+  ]);
+  // player must not receive slide metadata
+  const play = session.playerState();
+  assertEquals(
+    "slideMetadata" in (play.question as Record<string, unknown>),
+    false,
+  );
+});
+
+Deno.test("projectorState slideMetadata empty without config", () => {
+  const session = new Session(sampleQuiz, { randomInt: alwaysZero });
+  session.advance();
+  assertEquals(session.projectorState().question!.slideMetadata, []);
+});
+
+Deno.test("projectorState lobby has null question (no slide metadata)", () => {
+  const quiz: Quiz = {
+    ...sampleQuiz,
+    config: { slideMetadataKeys: ["domain"] },
+    questions: [
+      {
+        ...sampleQuiz.questions[0]!,
+        metadata: { domain: "D" },
+      },
+      sampleQuiz.questions[1]!,
+    ],
+  };
+  const session = new Session(quiz, { randomInt: alwaysZero });
+  assertEquals(session.phase, "LOBBY");
+  assertEquals(session.projectorState().question, null);
+});
+
+Deno.test("back reverses phase steps without clearing answers", () => {
+  const session = new Session(sampleQuiz, { randomInt: alwaysZero });
+  assertEquals(session.canGoBack(), false);
+  assertEquals(session.projectorState().canGoBack, false);
+
+  session.advance(); // Q0 QUESTION
+  assertEquals(session.phase, "QUESTION");
+  assertEquals(session.canGoBack(), true);
+  const { id } = session.join("Pat");
+  session.answer(id, session.projectorState().question!.correct);
+
+  session.advance(); // CORRECT
+  session.advance(); // EXPLAIN
+  assertEquals(session.phase, "EXPLAIN");
+  session.back();
+  assertEquals(session.phase, "CORRECT");
+  session.back();
+  assertEquals(session.phase, "QUESTION");
+  assertEquals(session.questionIndex, 0);
+  // Answers retained
+  assertEquals(session.getParticipant(id)?.score, 1);
+  assertEquals(session.hasAnswered(id, 0), true);
+
+  session.back(); // LOBBY
+  assertEquals(session.phase, "LOBBY");
+  assertEquals(session.canGoBack(), false);
+
+  // Full loop into Q1 then back across leaderboard boundary
+  session.advance(); // Q0
+  session.advance(); // CORRECT
+  session.advance(); // EXPLAIN
+  session.advance(); // LEADERBOARD
+  session.advance(); // Q1
+  assertEquals(session.phase, "QUESTION");
+  assertEquals(session.questionIndex, 1);
+  session.back();
+  assertEquals(session.phase, "LEADERBOARD");
+  assertEquals(session.questionIndex, 0);
+
+  // END → last LEADERBOARD
+  while (session.phase !== "END") session.advance();
+  session.back();
+  assertEquals(session.phase, "LEADERBOARD");
+  assertEquals(session.questionIndex, 1);
+});
+
 Deno.test("answering correct text under shuffle scores +1", () => {
   // Known permutation for 3 choices: j picks 1 then 0 → [C, A, B], correct A at 1
   let call = 0;

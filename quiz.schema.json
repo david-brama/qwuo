@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://local/quiz.schema.json",
   "title": "Live Training Quiz",
-  "description": "Schema for quiz.json (QUIZ_PATH). Matches validateQuiz in src/quiz.ts.",
+  "description": "Schema for quiz.json (QUIZ_PATH). Matches validateQuiz in src/quiz.ts. Catalog membership (domains↔domain, use_cases↔use-case) is enforced at load when catalog arrays are present.",
   "type": "object",
   "additionalProperties": true,
   "required": ["title", "questions"],
@@ -24,7 +24,52 @@
     "metadata": {
       "type": "object",
       "additionalProperties": true,
-      "description": "Optional authoring bag for non-gameplay data (tags, source IDs, CMS fields). Arbitrary nested JSON values allowed. Omitted or null → absent at load."
+      "description": "Optional authoring bag and value catalogs for question metadata. Omitted or null → absent at load. Not part of quiz fingerprint. When domains/use_cases arrays are present, paired question fields must use a catalog member (runtime).",
+      "properties": {
+        "domains": {
+          "type": "array",
+          "description": "Allowed values for question metadata.domain (exact string match).",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          }
+        },
+        "use_cases": {
+          "type": "array",
+          "description": "Allowed values for question metadata.use-case (exact string match).",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          }
+        },
+        "credential": {
+          "type": "string",
+          "description": "Optional credential or exam name (authoring only)."
+        },
+        "note": {
+          "type": "string",
+          "description": "Optional authoring note."
+        }
+      }
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Optional quiz presentation/config. Omitted or null → absent at load. Not part of quiz fingerprint. Runtime retains known fields only (slideMetadataKeys).",
+      "properties": {
+        "slideMetadataKeys": {
+          "type": "array",
+          "description": "Ordered question.metadata keys to show on projector slides. Duplicates rejected at load. Missing values on a question are skipped at render.",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "uniqueItems": true
+        }
+      }
     }
   },
   "$defs": {
@@ -61,7 +106,7 @@
         "metadata": {
           "type": "object",
           "additionalProperties": true,
-          "description": "Optional authoring bag per question (domain, use-case, live, tags, …). Arbitrary nested JSON values allowed. Omitted or null → absent at load. Used by startup filters; not part of quiz fingerprint."
+          "description": "Optional authoring bag per question (domain, use-case, live, tags, …). Arbitrary nested JSON values allowed. Omitted or null → absent at load. Used by startup filters and slide display; not part of quiz fingerprint."
         }
       }
     }

@@ -191,7 +191,7 @@ export function parseSessionPath(
 
 /** Optional hooks so join/answer/advance/reset can durable-save without FS in unit tests. */
 export type SessionPersistHooks = {
-  /** After successful join / answer / advance. Errors are logged; response still succeeds. */
+  /** After successful join / answer / advance / back. Errors are logged; response still succeeds. */
   save: () => Promise<void>;
   /** After host reset: clear snapshot file. */
   clear: () => Promise<void>;
@@ -246,6 +246,13 @@ export function createProjectorHandler(
       if (path === "/api/advance") {
         if (req.method !== "POST") return methodNotAllowed();
         session.advance();
+        await runHook("save", hooks?.save);
+        return json(session.projectorState());
+      }
+
+      if (path === "/api/back") {
+        if (req.method !== "POST") return methodNotAllowed();
+        session.back();
         await runHook("save", hooks?.save);
         return json(session.projectorState());
       }
@@ -327,6 +334,12 @@ export function createPlayerHandler(
       if (path === "/api/advance") {
         return json(
           { error: "Advance is only available on the projector port" },
+          403,
+        );
+      }
+      if (path === "/api/back") {
+        return json(
+          { error: "Back is only available on the projector port" },
           403,
         );
       }

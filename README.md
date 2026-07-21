@@ -139,6 +139,9 @@ Edit `quiz.json` (or point `QUIZ_PATH` at another file):
 ```json
 {
   "title": "My Training",
+  "config": {
+    "slideMetadataKeys": ["domain", "use-case"]
+  },
   "questions": [
     {
       "text": "Question text?",
@@ -148,10 +151,17 @@ Edit `quiz.json` (or point `QUIZ_PATH` at another file):
       "metadata": {
         "id": "Q1",
         "live": true,
-        "domain": "Tool Design & MCP Integration"
+        "domain": "Tool Design & MCP Integration",
+        "use-case": "Customer Support Resolution Agent"
       }
     }
-  ]
+  ],
+  "metadata": {
+    "credential": "Optional exam name",
+    "domains": ["Tool Design & MCP Integration"],
+    "use_cases": ["Customer Support Resolution Agent"],
+    "note": "Catalogs list allowed values for question domain / use-case."
+  }
 }
 ```
 
@@ -159,10 +169,11 @@ Edit `quiz.json` (or point `QUIZ_PATH` at another file):
 - At least 2 choices per question
 - `text` and `explain` support Markdown (GFM); `quiz.json` is trusted source, rendered as HTML on projector/player
 - `explain` is optional (projector shows “No explanation” if missing)
-- Optional root `metadata` and per-question `metadata` objects hold authoring data (tags, domain, `live`, …). They are retained on load and used by [question filters](#question-filters); they are not shown on player/projector and do not change scoring
+- Optional root `metadata` holds authoring fields and **catalogs**: `domains` / `use_cases` are arrays of allowed strings for per-question `metadata.domain` and `metadata.use-case`. When a catalog array is present, load rejects questions whose paired value is missing from that list (exact string match). Omit a catalog to allow free-form values for that field.
+- Per-question `metadata` is open-ended (`id`, `live`, `task-statement`, …) for [question filters](#question-filters) and authoring; it does not change scoring or the quiz identity fingerprint
+- Optional root `config.slideMetadataKeys` is an ordered list of question metadata keys to show on the **projector** slide (plain text). Missing keys on a question are skipped. Player UI does not show this metadata. `config` is not part of the fingerprint
 - Filters never rewrite the quiz file on disk
 - Invalid or missing file → process exits with a clear error
-
 ## Session flow
 
 ```

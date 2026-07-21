@@ -6,11 +6,36 @@ export type Question = {
   metadata?: Record<string, unknown>;
 };
 
+/** Quiz-level presentation/config retained at load (known fields only). */
+export type QuizConfig = {
+  /** Ordered question.metadata keys to show on projector slides. */
+  slideMetadataKeys: string[];
+};
+
+/** One resolved metadata entry for projector slides. */
+export type SlideMetadataEntry = {
+  key: string;
+  value: string;
+};
+
 export type Quiz = {
   title: string;
   questions: Question[];
   metadata?: Record<string, unknown>;
+  config?: QuizConfig;
 };
+
+/**
+ * Root metadata catalog property → per-question metadata key.
+ * When the catalog array is present on quiz.metadata, question values must match.
+ */
+export const METADATA_CATALOG_PAIRS: ReadonlyArray<{
+  catalogKey: string;
+  questionKey: string;
+}> = [
+  { catalogKey: "domains", questionKey: "domain" },
+  { catalogKey: "use_cases", questionKey: "use-case" },
+];
 
 /** One metadata filter entry: `key=value` after parse. */
 export type MetadataFilter = {
@@ -46,6 +71,122 @@ function parseMetadataField(
     throw new Error(`${loc}: "metadata" must be a JSON object if present`);
   }
   return { ...(raw as Record<string, unknown>) };
+}
+
+/**
+ * Parse optional root `config`. Known fields only (`slideMetadataKeys`).
+ * Omitted/null → undefined. Empty object → config with empty keys list.
+ */
+function parseQuizConfig(
+  raw: unknown,
+  loc: string,
+): QuizConfig | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`${loc}: "config" must be a JSON object if present`);
+  }
+  const obj = raw as Record<string, unknown>;
+  let slideMetadataKeys: string[] = [];
+
+  if (obj.slideMetadataKeys !== undefined && obj.slideMetadataKeys !== null) {
+    if (!Array.isArray(obj.slideMetadataKeys)) {
+      throw new Error(
+        `${loc}: config.slideMetadataKeys must be an array of non-empty strings`,
+      );
+    }
+    const seen = new Set<string>();
+    for (let i = 0; i < obj.slideMetadataKeys.length; i++) {
+      const k = obj.slideMetadataKeys[i];
+      if (!isNonEmptyString(k)) {
+        throw new Error(
+          `${loc}: config.slideMetadataKeys[${i}] must be a non-empty string`,
+        );
+      }
+      const key = k.trim();
+      if (seen.has(key)) {
+        throw new Error(
+          `${loc}: config.slideMetadataKeys must not contain duplicates ("${key}")`,
+        );
+      }
+      seen.add(key);
+      slideMetadataKeys.push(key);
+    }
+  }
+
+  return { slideMetadataKeys };
+}
+
+/**
+ * When root metadata includes a catalog array, validate elements and that
+ * each question's paired key (if set) is a string member of the catalog.
+ */
+function enforceMetadataCatalogs(
+  metadata: Record<string, unknown> | undefined,
+  questions: Question[],
+  path: string,
+): void {
+  if (!metadata) return;
+
+  for (const { catalogKey, questionKey } of METADATA_CATALOG_PAIRS) {
+    if (!(catalogKey in metadata)) continue;
+    const catalogRaw = metadata[catalogKey];
+    if (!Array.isArray(catalogRaw)) {
+      throw new Error(
+        `${path}: metadata.${catalogKey} must be an array of non-empty strings if present`,
+      );
+    }
+    const allowed = new Set<string>();
+    for (let i = 0; i < catalogRaw.length; i++) {
+      const el = catalogRaw[i];
+      if (!isNonEmptyString(el)) {
+        throw new Error(
+          `${path}: metadata.${catalogKey}[${i}] must be a non-empty string`,
+        );
+      }
+      allowed.add(el);
+    }
+
+    for (let qi = 0; qi < questions.length; qi++) {
+      const q = questions[qi]!;
+      const meta = q.metadata;
+      if (!meta || !(questionKey in meta)) continue;
+      const val = meta[questionKey];
+      const loc = `${path}: questions[${qi}].metadata.${questionKey}`;
+      if (typeof val !== "string") {
+        throw new Error(
+          `${loc} must be a string when metadata.${catalogKey} catalog is present`,
+        );
+      }
+      if (!allowed.has(val)) {
+        throw new Error(
+          `${loc} value ${JSON.stringify(val)} is not in metadata.${catalogKey} catalog`,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Resolve ordered slide metadata entries from config keys + question metadata.
+ * Scalars (string/number/boolean) are stringified; missing/null/object/array skipped.
+ */
+export function resolveSlideMetadata(
+  keys: readonly string[] | undefined,
+  questionMetadata: Record<string, unknown> | undefined,
+): SlideMetadataEntry[] {
+  if (!keys || keys.length === 0) return [];
+  const meta = questionMetadata;
+  if (!meta) return [];
+  const out: SlideMetadataEntry[] = [];
+  for (const key of keys) {
+    if (!(key in meta)) continue;
+    const v = meta[key];
+    if (v === null || v === undefined) continue;
+    if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
+      out.push({ key, value: String(v) });
+    }
+  }
+  return out;
 }
 
 /** Deep-copy a question (new choices array; shallow-copy metadata bag). */
@@ -297,6 +438,7 @@ export function validateQuiz(data: unknown, path: string): Quiz {
   }
 
   const metadata = parseMetadataField(root.metadata, path);
+  const config = parseQuizConfig(root.config, path);
 
   const questions: Question[] = [];
 
@@ -356,9 +498,14 @@ export function validateQuiz(data: unknown, path: string): Quiz {
     questions.push(question);
   }
 
+  enforceMetadataCatalogs(metadata, questions, path);
+
   const quiz: Quiz = { title: root.title.trim(), questions };
   if (metadata !== undefined) {
     quiz.metadata = metadata;
+  }
+  if (config !== undefined) {
+    quiz.config = config;
   }
   return quiz;
 }

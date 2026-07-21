@@ -40,6 +40,7 @@ export function projectorHtml(joinUrl: string, qrSvgMarkup: string): string {
           Text size
           <input type="range" id="font-scale" min="0.7" max="1.6" step="0.05" value="1" />
         </label>
+        <button type="button" id="back-btn" class="ghost-btn" disabled>Back</button>
         <button type="button" id="next-btn">Next</button>
       </div>
     </div>
@@ -62,12 +63,14 @@ export function projectorHtml(joinUrl: string, qrSvgMarkup: string): string {
     const phaseLabel = document.getElementById("phase-label");
     const quizTitle = document.getElementById("quiz-title");
     const statusEl = document.getElementById("status");
+    const backBtn = document.getElementById("back-btn");
     const nextBtn = document.getElementById("next-btn");
     const qrSmall = document.getElementById("qr-small");
     const qrModal = document.getElementById("qr-modal");
     const fontScale = document.getElementById("font-scale");
 
     let state = null;
+    let navBusy = false;
 
     function openQrModal() {
       qrModal.hidden = false;
@@ -120,17 +123,59 @@ export function projectorHtml(joinUrl: string, qrSvgMarkup: string): string {
       }).join("");
     }
 
+    /** Humanize metadata keys for display (use-case → Use case). */
+    function formatMetaLabel(key) {
+      return String(key)
+        .replace(/[-_]+/g, " ")
+        .replace(/\\b\\w/g, (c) => c.toUpperCase());
+    }
+
+    /**
+     * Fixed left rail — outside the question column so it never gets clipped
+     * by overflow or squeezed by long question text.
+     */
+    function renderSlideMetadata(entries) {
+      if (!entries || !entries.length) return "";
+      const cards = entries.map((e) =>
+        \`<div class="slide-meta-card">
+          <div class="slide-meta-key">\${esc(formatMetaLabel(e.key))}</div>
+          <div class="slide-meta-value">\${esc(e.value)}</div>
+        </div>\`
+      ).join("");
+      return \`<aside class="slide-meta-rail" aria-label="Question metadata">\${cards}</aside>\`;
+    }
+
+    function updateNavButtons() {
+      if (!state) {
+        backBtn.disabled = true;
+        nextBtn.disabled = true;
+        return;
+      }
+      if (navBusy) return;
+      backBtn.disabled = !state.canGoBack;
+      nextBtn.disabled = state.phase === "END";
+      nextBtn.textContent = state.phase === "END" ? "Done" : "Next";
+    }
+
     function render() {
       if (!state) return;
       quizTitle.textContent = state.title;
       phaseLabel.textContent = state.phase;
-      nextBtn.disabled = state.phase === "END";
-      nextBtn.textContent = state.phase === "END" ? "Done" : "Next";
+      updateNavButtons();
 
       const isLobby = state.phase === "LOBBY";
       qrSmall.hidden = isLobby;
       if (isLobby) closeQrModal();
-      main.className = isLobby ? "main lobby-main" : "main";
+
+      const q = state.question;
+      const metaHtml = (state.phase === "QUESTION" || state.phase === "CORRECT" ||
+        state.phase === "EXPLAIN" || state.phase === "LEADERBOARD")
+        ? renderSlideMetadata(q && q.slideMetadata)
+        : "";
+      const hasMeta = !!metaHtml;
+      main.className = isLobby
+        ? "main lobby-main"
+        : (hasMeta ? "main has-meta-rail" : "main");
 
       statusEl.textContent = state.phase === "END"
         ? "Session complete"
@@ -148,21 +193,25 @@ export function projectorHtml(joinUrl: string, qrSvgMarkup: string): string {
       }
 
       if (state.phase === "QUESTION" || state.phase === "CORRECT") {
-        const q = state.question;
         const hi = state.phase === "CORRECT" ? q.correct : -1;
         main.innerHTML = \`
-          <div class="q-progress">Question \${state.questionIndex + 1} of \${state.questionCount}</div>
-          <div class="q-text">\${md(q.text)}</div>
-          <div class="choices">\${renderChoices(q.choices, hi)}</div>
+          \${metaHtml}
+          <div class="slide-content">
+            <div class="q-progress">Question \${state.questionIndex + 1} of \${state.questionCount}</div>
+            <div class="q-text">\${md(q.text)}</div>
+            <div class="choices">\${renderChoices(q.choices, hi)}</div>
+          </div>
         \`;
         return;
       }
 
       if (state.phase === "EXPLAIN") {
-        const q = state.question;
         main.innerHTML = \`
-          <div class="q-progress">Explanation · Q\${state.questionIndex + 1}</div>
-          <div class="explain-box">\${md(q.explain || "No explanation")}</div>
+          \${metaHtml}
+          <div class="slide-content">
+            <div class="q-progress">Explanation · Q\${state.questionIndex + 1}</div>
+            <div class="explain-box">\${md(q.explain || "No explanation")}</div>
+          </div>
         \`;
         return;
       }
@@ -176,8 +225,11 @@ export function projectorHtml(joinUrl: string, qrSvgMarkup: string): string {
           </div>
         \`).join("") || \`<p class="muted">No participants yet</p>\`;
         main.innerHTML = \`
-          <div class="q-progress">Leaderboard · after Q\${state.questionIndex + 1}</div>
-          <div class="leaderboard">\${rows}</div>
+          \${metaHtml}
+          <div class="slide-content">
+            <div class="q-progress">Leaderboard · after Q\${state.questionIndex + 1}</div>
+            <div class="leaderboard">\${rows}</div>
+          </div>
         \`;
         return;
       }
@@ -191,9 +243,11 @@ export function projectorHtml(joinUrl: string, qrSvgMarkup: string): string {
           </div>
         \`).join("");
         main.innerHTML = \`
-          <div class="end-title">Session complete</div>
-          <p class="muted" style="margin-bottom:1.5rem;font-size:1.25rem">Final standings</p>
-          <div class="leaderboard">\${rows}</div>
+          <div class="slide-content">
+            <div class="end-title">Session complete</div>
+            <p class="muted" style="margin-bottom:1.5rem;font-size:1.25rem">Final standings</p>
+            <div class="leaderboard">\${rows}</div>
+          </div>
         \`;
       }
     }
@@ -205,10 +259,13 @@ export function projectorHtml(joinUrl: string, qrSvgMarkup: string): string {
       render();
     }
 
-    nextBtn.addEventListener("click", async () => {
+    async function postNav(path) {
+      if (navBusy) return;
+      navBusy = true;
+      backBtn.disabled = true;
       nextBtn.disabled = true;
       try {
-        const res = await fetch(SESSION_BASE + "/api/advance", { method: "POST" });
+        const res = await fetch(SESSION_BASE + path, { method: "POST" });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
           console.error(err);
@@ -217,9 +274,13 @@ export function projectorHtml(joinUrl: string, qrSvgMarkup: string): string {
           render();
         }
       } finally {
-        if (state && state.phase !== "END") nextBtn.disabled = false;
+        navBusy = false;
+        updateNavButtons();
       }
-    });
+    }
+
+    backBtn.addEventListener("click", () => postNav("/api/back"));
+    nextBtn.addEventListener("click", () => postNav("/api/advance"));
 
     fetchState().catch((e) => {
       main.innerHTML = \`<p class="muted">Failed to load: \${esc(e.message)}</p>\`;
@@ -227,7 +288,7 @@ export function projectorHtml(joinUrl: string, qrSvgMarkup: string): string {
 
     // light poll so join count updates in lobby
     setInterval(() => {
-      fetchState().catch(() => {});
+      if (!navBusy) fetchState().catch(() => {});
     }, 1500);
   </script>
 </body>

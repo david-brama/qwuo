@@ -11,6 +11,7 @@ import {
   formatEmptyFilterDiagnostic,
   loadQuiz,
   parseFilterEntry,
+  resolveSlideMetadata,
   shuffleQuestionChoices,
   suggestMetadataKeys,
   validateQuiz,
@@ -147,6 +148,256 @@ Deno.test("validateQuiz: question metadata non-object rejected", () => {
       '"metadata" must be a JSON object if present',
     );
   }
+});
+
+Deno.test("validateQuiz: config with slideMetadataKeys loaded", () => {
+  const quiz = validateQuiz(
+    minimalRoot({
+      config: { slideMetadataKeys: ["domain", "use-case"] },
+    }),
+    "t.json",
+  );
+  assertEquals(quiz.config, {
+    slideMetadataKeys: ["domain", "use-case"],
+  });
+});
+
+Deno.test("validateQuiz: config omitted / null / empty", () => {
+  const omit = validateQuiz(minimalRoot(), "t.json");
+  assertEquals(omit.config, undefined);
+  assertEquals("config" in omit, false);
+
+  const nulled = validateQuiz(minimalRoot({ config: null }), "t.json");
+  assertEquals(nulled.config, undefined);
+
+  const empty = validateQuiz(minimalRoot({ config: {} }), "t.json");
+  assertEquals(empty.config, { slideMetadataKeys: [] });
+
+  const emptyKeys = validateQuiz(
+    minimalRoot({ config: { slideMetadataKeys: [] } }),
+    "t.json",
+  );
+  assertEquals(emptyKeys.config, { slideMetadataKeys: [] });
+});
+
+Deno.test("validateQuiz: config non-object rejected", () => {
+  for (const bad of [[], "x", 1, true]) {
+    assertThrows(
+      () => validateQuiz(minimalRoot({ config: bad }), "t.json"),
+      Error,
+      '"config" must be a JSON object if present',
+    );
+  }
+});
+
+Deno.test("validateQuiz: slideMetadataKeys duplicates and bad entries rejected", () => {
+  assertThrows(
+    () =>
+      validateQuiz(
+        minimalRoot({
+          config: { slideMetadataKeys: ["domain", "domain"] },
+        }),
+        "t.json",
+      ),
+    Error,
+    "must not contain duplicates",
+  );
+  assertThrows(
+    () =>
+      validateQuiz(
+        minimalRoot({
+          config: { slideMetadataKeys: [""] },
+        }),
+        "t.json",
+      ),
+    Error,
+    "must be a non-empty string",
+  );
+  assertThrows(
+    () =>
+      validateQuiz(
+        minimalRoot({
+          config: { slideMetadataKeys: "domain" },
+        }),
+        "t.json",
+      ),
+    Error,
+    "must be an array",
+  );
+});
+
+Deno.test("validateQuiz: config drops unknown keys (known fields only)", () => {
+  const quiz = validateQuiz(
+    minimalRoot({
+      config: { slideMetadataKeys: ["id"], extra: true },
+    }),
+    "t.json",
+  );
+  assertEquals(quiz.config, { slideMetadataKeys: ["id"] });
+  assertEquals("extra" in (quiz.config as object), false);
+});
+
+Deno.test("validateQuiz: domain catalog accepts matching values", () => {
+  const quiz = validateQuiz(
+    {
+      title: "T",
+      metadata: { domains: ["A", "B"] },
+      questions: [
+        { ...minimalQuestion, metadata: { domain: "A" } },
+        { ...minimalQuestion, text: "Q2?", metadata: { live: true } },
+      ],
+    },
+    "t.json",
+  );
+  assertEquals(quiz.questions[0]!.metadata!.domain, "A");
+});
+
+Deno.test("validateQuiz: domain catalog rejects unknown value", () => {
+  assertThrows(
+    () =>
+      validateQuiz(
+        {
+          title: "T",
+          metadata: { domains: ["A", "B"] },
+          questions: [
+            { ...minimalQuestion, metadata: { domain: "C" } },
+          ],
+        },
+        "t.json",
+      ),
+    Error,
+    "not in metadata.domains catalog",
+  );
+});
+
+Deno.test("validateQuiz: use_cases catalog pairs with use-case", () => {
+  const ok = validateQuiz(
+    {
+      title: "T",
+      metadata: { use_cases: ["Customer Support Resolution Agent"] },
+      questions: [
+        {
+          ...minimalQuestion,
+          metadata: { "use-case": "Customer Support Resolution Agent" },
+        },
+      ],
+    },
+    "t.json",
+  );
+  assertEquals(
+    ok.questions[0]!.metadata!["use-case"],
+    "Customer Support Resolution Agent",
+  );
+
+  assertThrows(
+    () =>
+      validateQuiz(
+        {
+          title: "T",
+          metadata: { use_cases: ["Only This"] },
+          questions: [
+            { ...minimalQuestion, metadata: { "use-case": "Other" } },
+          ],
+        },
+        "t.json",
+      ),
+    Error,
+    "not in metadata.use_cases catalog",
+  );
+});
+
+Deno.test("validateQuiz: catalog omitted allows free-form domain", () => {
+  const quiz = validateQuiz(
+    {
+      title: "T",
+      metadata: { note: "no catalogs" },
+      questions: [
+        { ...minimalQuestion, metadata: { domain: "Any Free Form" } },
+      ],
+    },
+    "t.json",
+  );
+  assertEquals(quiz.questions[0]!.metadata!.domain, "Any Free Form");
+});
+
+Deno.test("validateQuiz: non-string paired value rejected when catalog present", () => {
+  assertThrows(
+    () =>
+      validateQuiz(
+        {
+          title: "T",
+          metadata: { domains: ["A"] },
+          questions: [
+            { ...minimalQuestion, metadata: { domain: true } },
+          ],
+        },
+        "t.json",
+      ),
+    Error,
+    "must be a string when metadata.domains catalog is present",
+  );
+});
+
+Deno.test("validateQuiz: catalog array element must be non-empty string", () => {
+  assertThrows(
+    () =>
+      validateQuiz(
+        minimalRoot({ metadata: { domains: [""] } }),
+        "t.json",
+      ),
+    Error,
+    "must be a non-empty string",
+  );
+  assertThrows(
+    () =>
+      validateQuiz(
+        minimalRoot({ metadata: { domains: [123] } }),
+        "t.json",
+      ),
+    Error,
+    "must be a non-empty string",
+  );
+  assertThrows(
+    () =>
+      validateQuiz(
+        minimalRoot({ metadata: { domains: "A" } }),
+        "t.json",
+      ),
+    Error,
+    "must be an array of non-empty strings",
+  );
+});
+
+Deno.test("resolveSlideMetadata: order, scalars, skips", () => {
+  assertEquals(resolveSlideMetadata(undefined, { domain: "A" }), []);
+  assertEquals(resolveSlideMetadata([], { domain: "A" }), []);
+  assertEquals(
+    resolveSlideMetadata(["use-case", "domain"], {
+      domain: "D",
+      "use-case": "U",
+      live: true,
+    }),
+    [
+      { key: "use-case", value: "U" },
+      { key: "domain", value: "D" },
+    ],
+  );
+  assertEquals(
+    resolveSlideMetadata(["domain", "missing", "live", "tags", "n", "obj"], {
+      domain: "D",
+      live: true,
+      n: 3,
+      tags: ["a"],
+      obj: { x: 1 },
+      nul: null,
+    }),
+    [
+      { key: "domain", value: "D" },
+      { key: "live", value: "true" },
+      { key: "n", value: "3" },
+    ],
+  );
+  assertEquals(resolveSlideMetadata(["domain"], undefined), []);
 });
 
 Deno.test("loadQuiz: accepts file with metadata and rejects array metadata", async () => {

@@ -1,5 +1,6 @@
 import {
   copyQuestion,
+  resolveSlideMetadata,
   shuffleQuestionChoices,
   type Question,
   type Quiz,
@@ -254,6 +255,49 @@ export class Session {
     return this.phase;
   }
 
+  /**
+   * Reverse one host step (projector Back). LOBBY is a no-op.
+   * Does not clear answers or scores — only phase / question index.
+   */
+  back(): Phase {
+    switch (this.phase) {
+      case "LOBBY":
+        break;
+      case "QUESTION":
+        if (this.questionIndex <= 0) {
+          this.phase = "LOBBY";
+          this.questionIndex = 0;
+        } else {
+          this.questionIndex -= 1;
+          this.phase = "LEADERBOARD";
+        }
+        break;
+      case "CORRECT":
+        this.phase = "QUESTION";
+        break;
+      case "EXPLAIN":
+        this.phase = "CORRECT";
+        break;
+      case "LEADERBOARD":
+        this.phase = "EXPLAIN";
+        break;
+      case "END":
+        if (this.questionCount > 0) {
+          this.questionIndex = this.questionCount - 1;
+          this.phase = "LEADERBOARD";
+        } else {
+          this.phase = "LOBBY";
+        }
+        break;
+    }
+    return this.phase;
+  }
+
+  /** True when Back would change phase (not LOBBY). */
+  canGoBack(): boolean {
+    return this.phase !== "LOBBY";
+  }
+
   leaderboard(): LeaderboardEntry[] {
     const list = [...this.participants.values()].sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
@@ -283,6 +327,8 @@ export class Session {
       ? null
       : this.currentQuestion;
 
+    const slideKeys = this.quiz.config?.slideMetadataKeys;
+
     return {
       role: "projector" as const,
       title: this.quiz.title,
@@ -290,12 +336,14 @@ export class Session {
       questionIndex: this.questionIndex,
       questionCount: this.questionCount,
       participantCount: this.participantCount(),
+      canGoBack: this.canGoBack(),
       question: q
         ? {
           text: q.text,
           choices: q.choices,
           correct: q.correct,
           explain: q.explain || "No explanation",
+          slideMetadata: resolveSlideMetadata(slideKeys, q.metadata),
         }
         : null,
       leaderboard: this.leaderboard(),

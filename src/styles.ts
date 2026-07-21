@@ -205,6 +205,7 @@ body {
   margin: 0 auto;
   padding-right: 100px;
   overflow-y: auto;
+  position: relative;
   --q-scale: 1;
 }
 
@@ -212,6 +213,19 @@ body {
   padding-right: 0;
   align-items: center;
   text-align: center;
+}
+
+/* Room for fixed left metadata rail + keep question readable */
+.main.has-meta-rail {
+  max-width: none;
+  padding-left: clamp(280px, 26vw, 360px);
+  padding-right: 100px;
+}
+
+.slide-content {
+  max-width: 1100px;
+  width: 100%;
+  margin: 0 auto;
 }
 
 .lobby-title {
@@ -260,6 +274,72 @@ body {
   color: var(--muted);
   margin-bottom: 0.75rem;
   font-weight: 600;
+}
+
+/* Fixed left rail — always on-screen, not clipped by main scroll */
+.slide-meta-rail {
+  position: fixed;
+  left: 1.5rem;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 8;
+  width: clamp(240px, 22vw, 320px);
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  pointer-events: none;
+}
+
+.slide-meta-card {
+  pointer-events: auto;
+  background: #1e2a3d;
+  border: 1px solid #4b7fd4;
+  border-left: 5px solid #60a5fa;
+  border-radius: 16px;
+  padding: 1.1rem 1.2rem 1.15rem;
+  box-shadow:
+    0 12px 36px rgba(0, 0, 0, 0.45),
+    0 0 0 1px rgba(96, 165, 250, 0.12);
+}
+
+.slide-meta-key {
+  display: block;
+  color: #93c5fd;
+  font-size: 0.95rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-bottom: 0.45rem;
+  line-height: 1.2;
+}
+
+.slide-meta-value {
+  display: block;
+  color: #f8fafc;
+  font-size: 1.35rem;
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: -0.015em;
+  word-break: break-word;
+}
+
+@media (max-width: 960px) {
+  .main.has-meta-rail {
+    padding-left: 0;
+    padding-right: 100px;
+  }
+  .slide-meta-rail {
+    position: static;
+    transform: none;
+    width: 100%;
+    flex-direction: row;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+    pointer-events: auto;
+  }
+  .slide-meta-card {
+    flex: 1 1 200px;
+  }
 }
 
 .q-text {
@@ -424,6 +504,27 @@ body {
   min-width: 140px;
 }
 #next-btn:hover:not(:disabled) { background: var(--accent-hover); }
+
+.ghost-btn,
+#back-btn {
+  background: transparent;
+  color: var(--text);
+  border: 2px solid var(--border);
+  font-size: 1.15rem;
+  padding: 0.85rem 1.75rem;
+  min-width: 120px;
+}
+.ghost-btn:hover:not(:disabled),
+#back-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--surface);
+  color: #fff;
+}
+.ghost-btn:disabled,
+#back-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 
 .status-line {
   font-size: 0.95rem;
