@@ -1,7 +1,11 @@
 import {
+  buildMetadataFilterFacets,
   copyQuestion,
+  filterQuestionsByMetadata,
   resolveSlideMetadata,
   shuffleQuestionChoices,
+  type MetadataFacet,
+  type MetadataFilter,
   type Question,
   type Quiz,
   type RandomInt,
@@ -40,6 +44,8 @@ export type SessionHydrate = {
   participants: Participant[];
   /** Effective play questions (shuffled choices + remapped correct). */
   effectiveQuestions: Question[];
+  /** Runtime metadata filters (empty = full process bank). */
+  runtimeFilters?: MetadataFilter[];
 };
 
 /** Server-side name cap (matches player input maxlength). */
@@ -55,24 +61,61 @@ function cloneQuestions(questions: Question[]): Question[] {
   return questions.map(copyQuestion);
 }
 
+function cloneFilters(filters: MetadataFilter[]): MetadataFilter[] {
+  return filters.map((f) => ({ key: f.key, value: f.value }));
+}
+
+/**
+ * Normalize runtime filters: one value per key (intersection only).
+ * Duplicate keys are rejected — OR-within-key is startup/CLI only.
+ */
+function normalizeFilterList(filters: MetadataFilter[]): MetadataFilter[] {
+  const out: MetadataFilter[] = [];
+  const seen = new Set<string>();
+  for (const f of filters) {
+    if (!f || typeof f.key !== "string" || typeof f.value !== "string") {
+      throw new SessionError("Invalid filter entry", 400);
+    }
+    const key = f.key.trim();
+    const value = f.value.trim();
+    if (!key) {
+      throw new SessionError("Invalid filter entry: empty key", 400);
+    }
+    if (seen.has(key)) {
+      throw new SessionError(
+        `Duplicate filter key "${key}": runtime filters allow one value per key`,
+        400,
+      );
+    }
+    seen.add(key);
+    out.push({ key, value });
+  }
+  return out;
+}
+
 export type SessionOptions = {
   /** Injectable RNG for tests; used when building a fresh shuffle. */
   randomInt?: RandomInt;
   /**
    * When set, use these play questions instead of shuffling (restore path).
-   * Must match quiz.questions.length.
+   * Length must match the filtered bank under runtimeFilters.
    */
   effectiveQuestions?: Question[];
+  /** Initial runtime metadata filters (default none). */
+  runtimeFilters?: MetadataFilter[];
 };
 
 export class Session {
   /**
    * Canonical loaded quiz (authoring order). Used for title/metadata and
    * must remain unshuffled for fingerprinting by callers.
+   * `quiz.questions` is the process bank (after startup filters).
    */
   readonly quiz: Quiz;
   /** Playable questions for this room (shuffled choices). */
   private playQuestions: Question[];
+  /** Active runtime metadata filters (subset of process bank). */
+  private runtimeFilters: MetadataFilter[] = [];
   phase: Phase = "LOBBY";
   questionIndex = 0;
   private participants = new Map<string, Participant>();
@@ -82,34 +125,101 @@ export class Session {
   constructor(quiz: Quiz, options?: SessionOptions) {
     this.quiz = quiz;
     this.randomInt = options?.randomInt;
+    this.runtimeFilters = cloneFilters(options?.runtimeFilters ?? []);
     if (options?.effectiveQuestions) {
-      if (options.effectiveQuestions.length !== quiz.questions.length) {
-        throw new Error(
-          `effectiveQuestions length ${options.effectiveQuestions.length} != quiz ${quiz.questions.length}`,
-        );
+      if (options.effectiveQuestions.length === 0) {
+        throw new Error("effectiveQuestions must be non-empty");
       }
       this.playQuestions = cloneQuestions(options.effectiveQuestions);
     } else {
-      this.playQuestions = this.buildShuffledPlayQuestions();
+      this.playQuestions = this.buildShuffledPlayQuestions(this.runtimeFilters);
     }
   }
 
-  private buildShuffledPlayQuestions(): Question[] {
+  /** Process bank size (startup-filtered quiz). */
+  get bankQuestionCount(): number {
+    return this.quiz.questions.length;
+  }
+
+  getRuntimeFilters(): MetadataFilter[] {
+    return cloneFilters(this.runtimeFilters);
+  }
+
+  getFilterFacets(): MetadataFacet[] {
+    return buildMetadataFilterFacets(this.quiz.questions);
+  }
+
+  /** Match count for filters against the process bank (no mutation). */
+  previewRuntimeFilters(filters: MetadataFilter[]): {
+    matchCount: number;
+    bankQuestionCount: number;
+    filters: MetadataFilter[];
+  } {
+    const normalized = normalizeFilterList(filters);
+    const matched = filterQuestionsByMetadata(
+      this.quiz.questions,
+      normalized,
+    );
+    return {
+      matchCount: matched.length,
+      bankQuestionCount: this.bankQuestionCount,
+      filters: normalized,
+    };
+  }
+
+  /**
+   * Apply runtime filters in LOBBY. Empty list clears to full bank.
+   * Rejects empty match sets and non-LOBBY phases.
+   */
+  applyRuntimeFilters(filters: MetadataFilter[]): void {
+    if (this.phase !== "LOBBY") {
+      throw new SessionError(
+        "Filters can only be applied in LOBBY",
+        409,
+      );
+    }
+    const normalized = normalizeFilterList(filters);
+    const matched = filterQuestionsByMetadata(
+      this.quiz.questions,
+      normalized,
+    );
+    if (matched.length === 0) {
+      throw new SessionError(
+        "No questions match the selected filters",
+        400,
+      );
+    }
+    this.runtimeFilters = normalized;
+    this.playQuestions = this.shuffleBankSubset(matched);
+    this.questionIndex = 0;
+  }
+
+  private buildShuffledPlayQuestions(
+    filters: MetadataFilter[],
+  ): Question[] {
+    const matched = filterQuestionsByMetadata(this.quiz.questions, filters);
+    if (matched.length === 0) {
+      throw new Error("Playable question set is empty");
+    }
+    return this.shuffleBankSubset(matched);
+  }
+
+  private shuffleBankSubset(questions: Question[]): Question[] {
     const rng = this.randomInt;
-    return this.quiz.questions.map((q) =>
-      rng
-        ? shuffleQuestionChoices(q, rng)
-        : shuffleQuestionChoices(q)
+    return questions.map((q) =>
+      rng ? shuffleQuestionChoices(q, rng) : shuffleQuestionChoices(q)
     );
   }
 
   /**
-   * Restore without reshuffling. `state.effectiveQuestions` must align with
-   * the loaded quiz (same length); caller/persist validates shape.
+   * Restore without reshuffling. `state.effectiveQuestions` is the playable
+   * list (may be a subset of the bank). Caller/persist validates shape.
    */
   static fromHydrate(quiz: Quiz, state: SessionHydrate): Session {
     const session = new Session(quiz, {
       effectiveQuestions: state.effectiveQuestions,
+      runtimeFilters: state.runtimeFilters ?? [],
+      // randomInt unused on hydrate path
     });
     session.phase = state.phase;
     session.questionIndex = state.questionIndex;
@@ -139,16 +249,23 @@ export class Session {
         answers: new Map(p.answers),
       })),
       effectiveQuestions: cloneQuestions(this.playQuestions),
+      runtimeFilters: cloneFilters(this.runtimeFilters),
     };
   }
 
-  /** Clear room to empty LOBBY (host reset / new training). Fresh shuffle. */
+  /**
+   * Soft host reset: return to LOBBY, clear runtime filters (full bank +
+   * fresh shuffle), keep participants and scores. Per-question answers are
+   * cleared so indices stay consistent with the rebuilt playable set.
+   */
   reset(): void {
     this.phase = "LOBBY";
     this.questionIndex = 0;
-    this.participants.clear();
-    this.nextJoinOrder = 0;
-    this.playQuestions = this.buildShuffledPlayQuestions();
+    this.runtimeFilters = [];
+    this.playQuestions = this.buildShuffledPlayQuestions([]);
+    for (const p of this.participants.values()) {
+      p.answers.clear();
+    }
   }
 
   get questionCount(): number {
@@ -335,8 +452,12 @@ export class Session {
       phase: this.phase,
       questionIndex: this.questionIndex,
       questionCount: this.questionCount,
+      bankQuestionCount: this.bankQuestionCount,
       participantCount: this.participantCount(),
       canGoBack: this.canGoBack(),
+      canApplyFilter: this.phase === "LOBBY",
+      activeFilters: this.getRuntimeFilters(),
+      filterFacets: this.getFilterFacets(),
       question: q
         ? {
           text: q.text,

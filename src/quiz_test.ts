@@ -6,6 +6,7 @@ import {
   assertThrows,
 } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
+  buildMetadataFilterFacets,
   collectQuestionMetadataKeys,
   filterQuestionsByMetadata,
   formatEmptyFilterDiagnostic,
@@ -661,4 +662,55 @@ Deno.test("formatEmptyFilterDiagnostic mentions available keys and suggestion", 
   assertEquals(collectQuestionMetadataKeys([
     q("1", { live: true, "use-case": "A" }),
   ]), ["live", "use-case"]);
+});
+
+Deno.test("buildMetadataFilterFacets: strings, bools, numbers, arrays; omit objects", () => {
+  const questions: Question[] = [
+    q("1", {
+      live: true,
+      domain: "A",
+      n: 2,
+      tags: ["intro", "exam"],
+      nested: { x: 1 },
+    }),
+    q("2", {
+      live: false,
+      domain: "B",
+      n: 2,
+      tags: ["intro"],
+    }),
+    q("3", {
+      domain: "A",
+      onlyObj: { y: 2 },
+    }),
+  ];
+  const facets = buildMetadataFilterFacets(questions);
+  const keys = facets.map((f) => f.key);
+  // well-known first: live, domain — then alpha: n, tags
+  assertEquals(keys.includes("live"), true);
+  assertEquals(keys.includes("domain"), true);
+  assertEquals(keys.includes("nested"), false);
+  assertEquals(keys.includes("onlyObj"), false);
+  assertEquals(keys.indexOf("live") < keys.indexOf("domain"), true);
+
+  const live = facets.find((f) => f.key === "live")!;
+  assertEquals(live.values, [
+    { value: "false", count: 1 },
+    { value: "true", count: 1 },
+  ]);
+
+  const domain = facets.find((f) => f.key === "domain")!;
+  assertEquals(domain.values, [
+    { value: "A", count: 2 },
+    { value: "B", count: 1 },
+  ]);
+
+  const tags = facets.find((f) => f.key === "tags")!;
+  assertEquals(tags.values, [
+    { value: "exam", count: 1 },
+    { value: "intro", count: 2 },
+  ]);
+
+  const n = facets.find((f) => f.key === "n")!;
+  assertEquals(n.values, [{ value: "2", count: 2 }]);
 });

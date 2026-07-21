@@ -351,6 +351,111 @@ export function collectQuestionMetadataKeys(questions: Question[]): string[] {
   return [...keys].sort();
 }
 
+/** Well-known facet keys shown first in the projector filter panel. */
+export const WELL_KNOWN_FACET_KEYS: readonly string[] = [
+  "live",
+  "domain",
+  "use-case",
+  "task-statement",
+];
+
+/** One filterable value under a metadata key, with bank question count. */
+export type MetadataFacetValue = {
+  value: string;
+  count: number;
+};
+
+/** One metadata key facet for host filter dropdowns. */
+export type MetadataFacet = {
+  key: string;
+  values: MetadataFacetValue[];
+};
+
+/**
+ * Stringify a scalar the same way filter values are matched
+ * (bool true/false, null → "null", finite numbers → String(n)).
+ */
+export function stringifyFilterScalar(field: unknown): string | null {
+  if (typeof field === "string") return field;
+  if (typeof field === "boolean") return field ? "true" : "false";
+  if (typeof field === "number") {
+    if (!Number.isFinite(field)) return null;
+    return String(field);
+  }
+  if (field === null) return "null";
+  return null;
+}
+
+/** Collect matchable string values from a metadata field (scalar or array). */
+function collectMatchableValues(field: unknown): string[] {
+  if (Array.isArray(field)) {
+    const out: string[] = [];
+    for (const el of field) {
+      const s = stringifyFilterScalar(el);
+      if (s !== null) out.push(s);
+    }
+    return out;
+  }
+  if (field !== null && typeof field === "object") return [];
+  const s = stringifyFilterScalar(field);
+  return s === null ? [] : [s];
+}
+
+/**
+ * Build filter facets from a question bank for the host UI.
+ * Keys with only non-matchable (object) values are omitted.
+ * Order: well-known keys first (when present), then remaining keys A–Z.
+ * Values within a key are sorted lexicographically.
+ */
+export function buildMetadataFilterFacets(
+  questions: Question[],
+): MetadataFacet[] {
+  // key → value → set of question indices that match key=value alone
+  const byKey = new Map<string, Map<string, Set<number>>>();
+
+  for (let qi = 0; qi < questions.length; qi++) {
+    const meta = questions[qi]!.metadata;
+    if (!meta) continue;
+    for (const [key, field] of Object.entries(meta)) {
+      const values = collectMatchableValues(field);
+      if (values.length === 0) continue;
+      let valueMap = byKey.get(key);
+      if (!valueMap) {
+        valueMap = new Map();
+        byKey.set(key, valueMap);
+      }
+      for (const v of values) {
+        let set = valueMap.get(v);
+        if (!set) {
+          set = new Set();
+          valueMap.set(v, set);
+        }
+        set.add(qi);
+      }
+    }
+  }
+
+  const keys = [...byKey.keys()];
+  keys.sort((a, b) => {
+    const ai = WELL_KNOWN_FACET_KEYS.indexOf(a);
+    const bi = WELL_KNOWN_FACET_KEYS.indexOf(b);
+    const aKnown = ai >= 0;
+    const bKnown = bi >= 0;
+    if (aKnown && bKnown) return ai - bi;
+    if (aKnown) return -1;
+    if (bKnown) return 1;
+    return a.localeCompare(b);
+  });
+
+  return keys.map((key) => {
+    const valueMap = byKey.get(key)!;
+    const values = [...valueMap.entries()]
+      .map(([value, set]) => ({ value, count: set.size }))
+      .sort((a, b) => a.value.localeCompare(b.value));
+    return { key, values };
+  });
+}
+
 /**
  * Normalize for fuzzy key comparison: lowercase, treat `_` and `-` as the same.
  */

@@ -260,7 +260,47 @@ export function createProjectorHandler(
       if (path === "/api/reset") {
         if (req.method !== "POST") return methodNotAllowed();
         session.reset();
-        await runHook("clear", hooks?.clear);
+        // Soft reset keeps roster/scores — durable-save, do not wipe snapshot.
+        await runHook("save", hooks?.save);
+        return json(session.projectorState());
+      }
+
+      if (path === "/api/filter") {
+        if (req.method !== "POST") return methodNotAllowed();
+        const body = await readJson(req) as {
+          filters?: unknown;
+          preview?: unknown;
+        };
+        if (!Array.isArray(body.filters)) {
+          throw new SessionError("filters must be an array", 400);
+        }
+        const filters: { key: string; value: string }[] = [];
+        for (const entry of body.filters) {
+          if (
+            entry === null ||
+            typeof entry !== "object" ||
+            Array.isArray(entry)
+          ) {
+            throw new SessionError("Invalid filter entry", 400);
+          }
+          const e = entry as Record<string, unknown>;
+          if (typeof e.key !== "string" || typeof e.value !== "string") {
+            throw new SessionError("Invalid filter entry", 400);
+          }
+          filters.push({ key: e.key, value: e.value });
+        }
+        const preview = body.preview === true;
+        if (preview) {
+          const result = session.previewRuntimeFilters(filters);
+          return json({
+            preview: true,
+            matchCount: result.matchCount,
+            bankQuestionCount: result.bankQuestionCount,
+            filters: result.filters,
+          });
+        }
+        session.applyRuntimeFilters(filters);
+        await runHook("save", hooks?.save);
         return json(session.projectorState());
       }
 
@@ -346,6 +386,12 @@ export function createPlayerHandler(
       if (path === "/api/reset") {
         return json(
           { error: "Reset is only available on the projector port" },
+          403,
+        );
+      }
+      if (path === "/api/filter") {
+        return json(
+          { error: "Filter is only available on the projector port" },
           403,
         );
       }

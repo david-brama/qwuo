@@ -132,6 +132,18 @@ QUIZ_FILTER='live=true;domain=Tool Design & MCP Integration' deno run -P main.ts
 
 If filters match **zero** questions, or a filter is malformed / an unknown CLI flag appears, the process exits with a non-zero status and does not start servers.
 
+### Projector filter panel (runtime)
+
+The projector UI has a **right-side Filters panel** for further narrowing the process bank during a room without restarting.
+
+- One **dropdown** (single-select) per question-metadata key; values discovered from the bank (plus **Any**)
+- Selected keys combine with **intersection only** (one value per key — no multi-value OR in the panel)
+- Panel is shown **only in LOBBY** (hidden once the session advances; use Back or Reset to return)
+- **Clear** removes runtime filters and restores the full process bank
+- Host **Reset** returns to LOBBY and clears runtime filters; participants and scores are kept
+- Startup `--filter` / `QUIZ_FILTER` still define the maximum bank and may use OR within a key; the panel cannot bring back startup-dropped questions
+
+
 ## Quiz file
 
 Edit `quiz.json` (or point `QUIZ_PATH` at another file):
@@ -196,8 +208,8 @@ Live session state (phase, question index, participants, scores, per-question an
 - Quiz identity is fingerprinted; if you change `quiz.json` content, an old snapshot is ignored and a new LOBBY starts
 - Fresh room without deleting the file by hand:
   - Boot: `SESSION_FRESH=1 deno task start` (clears snapshot; mints new UUID unless `SESSION_ID` is set)
-  - Runtime: `POST /s/{sessionId}/api/reset` on the **projector** port only (player port returns 403). Keeps the same UUID so printed QR stays valid
-- Snapshot is host-disk only (no cloud sync). Delete the file or reset when the training is done if you do not want scores left on disk
+  - Runtime: `POST /s/{sessionId}/api/reset` on the **projector** port only (player port returns 403). Soft reset: LOBBY + clear filters, keep roster/scores; same UUID so printed QR stays valid
+- Snapshot is host-disk only (no cloud sync). Delete the snapshot file or use `SESSION_FRESH` when you want a clean room without prior scores
 
 ## Layout
 
@@ -220,6 +232,6 @@ src/
 
 ## Notes
 
-- Session survives Deno restart via the local snapshot and pointer (use `SESSION_FRESH` or projector reset for a clean room)
+- Session survives Deno restart via the local snapshot and pointer (use `SESSION_FRESH` for a clean room without prior roster)
 - Player clients poll `/s/{sessionId}/api/state` about once per second
 - Participant id is stored in the phone’s `localStorage` so reload reattaches — including after server restart when the snapshot still has that id

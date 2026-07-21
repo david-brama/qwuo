@@ -213,7 +213,7 @@ Deno.test("reset rebuilds play order with RNG", () => {
   session.reset();
   const second = session.getEffectiveQuestions()[0]!.choices.slice();
   assertNotEquals(JSON.stringify(first), JSON.stringify(second));
-  assertEquals(session.participantCount(), 0);
+  assertEquals(session.participantCount(), 1);
   assertEquals(session.phase, "LOBBY");
 });
 
@@ -227,4 +227,132 @@ Deno.test("session.quiz remains authoring order for fingerprint callers", () => 
     session.getEffectiveQuestions()[0]!.choices,
     sampleQuiz.questions[0]!.choices,
   );
+});
+
+const filterBankQuiz: Quiz = {
+  title: "Filter Bank",
+  questions: [
+    {
+      text: "Q1",
+      choices: ["A", "B"],
+      correct: 0,
+      explain: "",
+      metadata: { live: true, domain: "A" },
+    },
+    {
+      text: "Q2",
+      choices: ["A", "B"],
+      correct: 0,
+      explain: "",
+      metadata: { live: false, domain: "A" },
+    },
+    {
+      text: "Q3",
+      choices: ["A", "B"],
+      correct: 0,
+      explain: "",
+      metadata: { live: true, domain: "B" },
+    },
+  ],
+};
+
+Deno.test("runtime filter reduces and clears playable set", () => {
+  const session = new Session(filterBankQuiz, { randomInt: alwaysZero });
+  assertEquals(session.questionCount, 3);
+  assertEquals(session.bankQuestionCount, 3);
+  session.join("Host");
+  session.applyRuntimeFilters([{ key: "live", value: "true" }]);
+  assertEquals(session.questionCount, 2);
+  assertEquals(session.getEffectiveQuestions().map((q) => q.text), ["Q1", "Q3"]);
+  assertEquals(session.participantCount(), 1);
+  assertEquals(session.questionIndex, 0);
+  assertEquals(session.getRuntimeFilters(), [{ key: "live", value: "true" }]);
+
+  session.applyRuntimeFilters([]);
+  assertEquals(session.questionCount, 3);
+  assertEquals(session.getRuntimeFilters(), []);
+});
+
+Deno.test("runtime filter empty match rejected", () => {
+  const session = new Session(filterBankQuiz, { randomInt: alwaysZero });
+  try {
+    session.applyRuntimeFilters([{ key: "domain", value: "Z" }]);
+    throw new Error("expected throw");
+  } catch (err) {
+    assertEquals((err as { status?: number }).status, 400);
+  }
+  assertEquals(session.questionCount, 3);
+  assertEquals(session.getRuntimeFilters(), []);
+});
+
+Deno.test("runtime filter rejected outside LOBBY", () => {
+  const session = new Session(filterBankQuiz, { randomInt: alwaysZero });
+  session.advance();
+  try {
+    session.applyRuntimeFilters([{ key: "live", value: "true" }]);
+    throw new Error("expected throw");
+  } catch (err) {
+    assertEquals((err as { status?: number }).status, 409);
+  }
+  assertEquals(session.questionCount, 3);
+});
+
+Deno.test("reset clears runtime filters and keeps participants/scores", () => {
+  const session = new Session(filterBankQuiz, { randomInt: alwaysZero });
+  session.applyRuntimeFilters([{ key: "domain", value: "A" }]);
+  assertEquals(session.questionCount, 2);
+  const { id } = session.join("A");
+  session.advance();
+  session.answer(id, session.projectorState().question!.correct);
+  assertEquals(session.getParticipant(id)?.score, 1);
+  session.reset();
+  assertEquals(session.phase, "LOBBY");
+  assertEquals(session.participantCount(), 1);
+  assertEquals(session.getParticipant(id)?.score, 1);
+  assertEquals(session.hasAnswered(id, 0), false);
+  assertEquals(session.questionCount, 3);
+  assertEquals(session.getRuntimeFilters(), []);
+});
+
+Deno.test("projectorState exposes filter context; facets from full bank", () => {
+  const session = new Session(filterBankQuiz, { randomInt: alwaysZero });
+  session.applyRuntimeFilters([{ key: "live", value: "true" }]);
+  const proj = session.projectorState();
+  assertEquals(proj.bankQuestionCount, 3);
+  assertEquals(proj.questionCount, 2);
+  assertEquals(proj.canApplyFilter, true);
+  assertEquals(proj.activeFilters, [{ key: "live", value: "true" }]);
+  const domain = proj.filterFacets.find((f) => f.key === "domain")!;
+  // bank still has domain B even though filtered playable may omit some
+  assertEquals(domain.values.find((v) => v.value === "B")?.count, 1);
+  assertEquals(domain.values.find((v) => v.value === "A")?.count, 2);
+
+  session.advance();
+  assertEquals(session.projectorState().canApplyFilter, false);
+
+  const play = session.playerState();
+  assertEquals("filterFacets" in play, false);
+  assertEquals("activeFilters" in play, false);
+});
+
+Deno.test("previewRuntimeFilters does not mutate", () => {
+  const session = new Session(filterBankQuiz, { randomInt: alwaysZero });
+  const prev = session.previewRuntimeFilters([{ key: "live", value: "true" }]);
+  assertEquals(prev.matchCount, 2);
+  assertEquals(session.questionCount, 3);
+  assertEquals(session.getRuntimeFilters(), []);
+});
+
+Deno.test("runtime filter rejects duplicate keys (no OR)", () => {
+  const session = new Session(filterBankQuiz, { randomInt: alwaysZero });
+  try {
+    session.applyRuntimeFilters([
+      { key: "domain", value: "A" },
+      { key: "domain", value: "B" },
+    ]);
+    throw new Error("expected throw");
+  } catch (err) {
+    assertEquals((err as { status?: number }).status, 400);
+  }
+  assertEquals(session.questionCount, 3);
 });

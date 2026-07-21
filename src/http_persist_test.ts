@@ -66,16 +66,19 @@ Deno.test("projector allows local Origin on mutate", async () => {
     }),
   );
   assertEquals(res.status, 200);
-  assertEquals(session.participantCount(), 0);
+  assertEquals(session.participantCount(), 1);
 });
 
-Deno.test("projector POST /s/{id}/api/reset clears session and calls clear hook", async () => {
+Deno.test("projector POST /s/{id}/api/reset keeps roster and calls save hook", async () => {
   const session = new Session(quiz);
   session.join("Host-run");
   session.advance();
+  let saves = 0;
   let cleared = 0;
   const hooks: SessionPersistHooks = {
-    save: async () => {},
+    save: async () => {
+      saves += 1;
+    },
     clear: async () => {
       cleared += 1;
     },
@@ -87,8 +90,9 @@ Deno.test("projector POST /s/{id}/api/reset clears session and calls clear hook"
   assertEquals(res.status, 200);
   const body = await res.json();
   assertEquals(body.phase, "LOBBY");
-  assertEquals(body.participantCount, 0);
-  assertEquals(cleared, 1);
+  assertEquals(body.participantCount, 1);
+  assertEquals(saves, 1);
+  assertEquals(cleared, 0);
 });
 
 Deno.test("player POST /s/{id}/api/reset rejected; session unchanged", async () => {
@@ -252,4 +256,136 @@ Deno.test("snapshot path uses uuid filename stem", async () => {
     snapshotPath(".qwuo", SESSION_ID),
     `.qwuo/${SESSION_ID}.json`,
   );
+});
+
+const filterQuiz: Quiz = {
+  title: "HTTP Filter",
+  questions: [
+    {
+      text: "Q1",
+      choices: ["A", "B"],
+      correct: 0,
+      explain: "",
+      metadata: { live: true, domain: "A" },
+    },
+    {
+      text: "Q2",
+      choices: ["A", "B"],
+      correct: 0,
+      explain: "",
+      metadata: { live: false, domain: "B" },
+    },
+  ],
+};
+
+Deno.test("projector POST /api/filter preview does not mutate or save", async () => {
+  const session = new Session(filterQuiz);
+  let saves = 0;
+  const hooks: SessionPersistHooks = {
+    save: async () => {
+      saves += 1;
+    },
+    clear: async () => {},
+  };
+  const handler = createProjectorHandler(session, config, SESSION_ID, hooks);
+  const res = await handler(
+    new Request(api("/api/filter"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        filters: [{ key: "live", value: "true" }],
+        preview: true,
+      }),
+    }),
+  );
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.preview, true);
+  assertEquals(body.matchCount, 1);
+  assertEquals(session.questionCount, 2);
+  assertEquals(saves, 0);
+});
+
+Deno.test("projector POST /api/filter apply in LOBBY saves", async () => {
+  const session = new Session(filterQuiz);
+  let saves = 0;
+  const hooks: SessionPersistHooks = {
+    save: async () => {
+      saves += 1;
+    },
+    clear: async () => {},
+  };
+  const handler = createProjectorHandler(session, config, SESSION_ID, hooks);
+  const res = await handler(
+    new Request(api("/api/filter"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ filters: [{ key: "live", value: "true" }] }),
+    }),
+  );
+  assertEquals(res.status, 200);
+  const body = await res.json();
+  assertEquals(body.questionCount, 1);
+  assertEquals(body.bankQuestionCount, 2);
+  assertEquals(body.activeFilters, [{ key: "live", value: "true" }]);
+  assertEquals(session.questionCount, 1);
+  assertEquals(saves, 1);
+});
+
+Deno.test("projector POST /api/filter empty match is 400", async () => {
+  const session = new Session(filterQuiz);
+  const handler = createProjectorHandler(session, config, SESSION_ID);
+  const res = await handler(
+    new Request(api("/api/filter"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ filters: [{ key: "domain", value: "Z" }] }),
+    }),
+  );
+  assertEquals(res.status, 400);
+  assertEquals(session.questionCount, 2);
+});
+
+Deno.test("projector POST /api/filter outside LOBBY is 409", async () => {
+  const session = new Session(filterQuiz);
+  session.advance();
+  const handler = createProjectorHandler(session, config, SESSION_ID);
+  const res = await handler(
+    new Request(api("/api/filter"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ filters: [{ key: "live", value: "true" }] }),
+    }),
+  );
+  assertEquals(res.status, 409);
+  assertEquals(session.questionCount, 2);
+});
+
+Deno.test("projector rejects non-local Origin on filter", async () => {
+  const session = new Session(filterQuiz);
+  const handler = createProjectorHandler(session, config, SESSION_ID);
+  const res = await handler(
+    new Request(api("/api/filter"), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: "https://evil.example",
+      },
+      body: JSON.stringify({ filters: [] }),
+    }),
+  );
+  assertEquals(res.status, 403);
+});
+
+Deno.test("player POST /api/filter rejected", async () => {
+  const session = new Session(filterQuiz);
+  const handler = createPlayerHandler(session, SESSION_ID);
+  const res = await handler(
+    new Request(`http://0.0.0.0${BASE}/api/filter`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ filters: [] }),
+    }),
+  );
+  assertEquals(res.status, 403);
 });

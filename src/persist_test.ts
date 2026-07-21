@@ -362,17 +362,84 @@ Deno.test("join/answer/advance then save → new Session matches; reset clears",
 
   restored.reset();
   assertEquals(restored.phase, "LOBBY");
-  assertEquals(restored.participantCount(), 0);
+  assertEquals(restored.participantCount(), 2);
+  assertEquals(restored.getParticipant(alice.id)?.score, 2);
+  assertEquals(restored.getParticipant(bob.id)?.score, 0);
+  assertEquals(restored.hasAnswered(alice.id, 0), false);
   await clearSnapshot(path);
   assertEquals(await loadSnapshot(path, fp), null);
 });
 
-Deno.test("Session.reset empties room", () => {
+Deno.test("Session.reset returns to lobby and keeps roster", () => {
   const session = new Session(sampleQuiz, { randomInt: alwaysZero });
   session.join("Eve");
   session.advance();
   session.reset();
   assertEquals(session.phase, "LOBBY");
   assertEquals(session.questionIndex, 0);
-  assertEquals(session.participantCount(), 0);
+  assertEquals(session.participantCount(), 1);
+});
+
+Deno.test("filtered session snapshot round-trip restores runtime filters", async () => {
+  const quiz: Quiz = {
+    title: "Filtered Persist",
+    questions: [
+      {
+        text: "Q1",
+        choices: ["A", "B"],
+        correct: 0,
+        explain: "e1",
+        metadata: { live: true },
+      },
+      {
+        text: "Q2",
+        choices: ["X", "Y"],
+        correct: 1,
+        explain: "e2",
+        metadata: { live: false },
+      },
+      {
+        text: "Q3",
+        choices: ["M", "N"],
+        correct: 0,
+        explain: "e3",
+        metadata: { live: true },
+      },
+    ],
+  };
+  const session = new Session(quiz, { randomInt: alwaysZero });
+  session.applyRuntimeFilters([{ key: "live", value: "true" }]);
+  session.join("Pat");
+  session.advance();
+  const fp = await quizFingerprint(quiz);
+  const path = tmpPath("filtered.json");
+  await saveSnapshot(path, sessionToSnapshot(session, fp));
+
+  const snap = await loadSnapshot(path, fp, quiz);
+  assertExists(snap);
+  assertEquals(snap!.runtimeFilters, [{ key: "live", value: "true" }]);
+  assertEquals(snap!.effectiveQuestions.length, 2);
+
+  const restored = sessionFromSnapshot(quiz, snap!);
+  assertEquals(restored.questionCount, 2);
+  assertEquals(restored.getRuntimeFilters(), [{ key: "live", value: "true" }]);
+  assertEquals(restored.getEffectiveQuestions().map((q) => q.text), ["Q1", "Q3"]);
+  assertEquals(restored.phase, "QUESTION");
+  assertEquals(restored.participantCount(), 1);
+  // metadata restored for slide filters
+  assertEquals(restored.getEffectiveQuestions()[0]!.metadata?.live, true);
+
+  await clearSnapshot(path);
+});
+
+Deno.test("legacy full-bank snapshot without runtimeFilters still loads", async () => {
+  const fp = await quizFingerprint(sampleQuiz);
+  const session = new Session(sampleQuiz, { randomInt: alwaysZero });
+  const snap = sessionToSnapshot(session, fp);
+  // Simulate legacy: no runtimeFilters field
+  delete (snap as { runtimeFilters?: unknown }).runtimeFilters;
+  assertEquals(snapshotMatchesQuiz(snap, sampleQuiz), true);
+  const restored = sessionFromSnapshot(sampleQuiz, snap);
+  assertEquals(restored.questionCount, sampleQuiz.questions.length);
+  assertEquals(restored.getRuntimeFilters(), []);
 });

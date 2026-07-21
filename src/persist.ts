@@ -1,4 +1,5 @@
-import type { Question, Quiz } from "./quiz.ts";
+import type { MetadataFilter, Question, Quiz } from "./quiz.ts";
+import { filterQuestionsByMetadata } from "./quiz.ts";
 import { Session, type Phase } from "./session.ts";
 
 export const SNAPSHOT_VERSION = 2 as const;
@@ -27,8 +28,13 @@ export type SessionSnapshot = {
   questionIndex: number;
   nextJoinOrder: number;
   participants: SnapshotParticipant[];
-  /** Session play order; required for v2. */
+  /** Session play order (playable subset); required for v2. */
   effectiveQuestions: SnapshotEffectiveQuestion[];
+  /**
+   * Runtime metadata filters applied on top of the process bank.
+   * Omitted or empty on legacy snapshots = full bank.
+   */
+  runtimeFilters?: MetadataFilter[];
 };
 
 const PHASES: ReadonlySet<string> = new Set([
@@ -58,11 +64,25 @@ export async function quizFingerprint(quiz: Quiz): Promise<string> {
     .join("");
 }
 
+function snapshotRuntimeFilters(
+  snapshot: SessionSnapshot,
+): MetadataFilter[] {
+  return normalizeRuntimeFilters(snapshot.runtimeFilters);
+}
+
+function normalizeRuntimeFilters(
+  raw: MetadataFilter[] | undefined,
+): MetadataFilter[] {
+  if (!raw || raw.length === 0) return [];
+  return raw.map((f) => ({ key: f.key, value: f.value }));
+}
+
 export function sessionToSnapshot(
   session: Session,
   fingerprint: string,
 ): SessionSnapshot {
   const state = session.toHydrate();
+  const runtimeFilters = state.runtimeFilters ?? [];
   return {
     version: SNAPSHOT_VERSION,
     quizFingerprint: fingerprint,
@@ -88,6 +108,7 @@ export function sessionToSnapshot(
       correct: q.correct,
       explain: q.explain,
     })),
+    ...(runtimeFilters.length > 0 ? { runtimeFilters } : {}),
   };
 }
 
@@ -95,9 +116,11 @@ export function sessionFromSnapshot(
   quiz: Quiz,
   snapshot: SessionSnapshot,
 ): Session {
-  if (snapshot.effectiveQuestions.length !== quiz.questions.length) {
+  const runtimeFilters = snapshotRuntimeFilters(snapshot);
+  const expected = filterQuestionsByMetadata(quiz.questions, runtimeFilters);
+  if (snapshot.effectiveQuestions.length !== expected.length) {
     throw new Error(
-      `Snapshot effectiveQuestions length mismatch: ${snapshot.effectiveQuestions.length} vs ${quiz.questions.length}`,
+      `Snapshot effectiveQuestions length mismatch: ${snapshot.effectiveQuestions.length} vs filtered bank ${expected.length}`,
     );
   }
   const participants = snapshot.participants.map((p) => {
@@ -116,13 +139,21 @@ export function sessionFromSnapshot(
       answers,
     };
   });
+  // Restore play choice order from snapshot; attach metadata from bank match by text.
   const effectiveQuestions: Question[] = snapshot.effectiveQuestions.map(
-    (q) => ({
-      text: q.text,
-      choices: [...q.choices],
-      correct: q.correct,
-      explain: q.explain,
-    }),
+    (q, i) => {
+      const bankQ = expected[i]!;
+      const out: Question = {
+        text: q.text,
+        choices: [...q.choices],
+        correct: q.correct,
+        explain: q.explain,
+      };
+      if (bankQ.metadata !== undefined) {
+        out.metadata = { ...bankQ.metadata };
+      }
+      return out;
+    },
   );
   return Session.fromHydrate(quiz, {
     phase: snapshot.phase,
@@ -130,6 +161,7 @@ export function sessionFromSnapshot(
     nextJoinOrder: snapshot.nextJoinOrder,
     participants,
     effectiveQuestions,
+    runtimeFilters,
   });
 }
 
@@ -162,24 +194,38 @@ export function isValidSnapshot(data: unknown): data is SessionSnapshot {
   for (const q of o.effectiveQuestions) {
     if (!isValidEffectiveQuestion(q)) return false;
   }
+  if (o.runtimeFilters !== undefined) {
+    if (!Array.isArray(o.runtimeFilters)) return false;
+    for (const f of o.runtimeFilters) {
+      if (f === null || typeof f !== "object" || Array.isArray(f)) return false;
+      const fr = f as Record<string, unknown>;
+      if (typeof fr.key !== "string" || !fr.key.trim()) return false;
+      if (typeof fr.value !== "string") return false;
+    }
+  }
   return true;
 }
 
 /**
- * Validate snapshot against a loaded quiz: effective question count and
- * choice counts must match; each correct index in range.
- * Used when loading so a corrupt order cannot restore under a new shuffle.
+ * Validate snapshot against a loaded quiz process bank.
+ * Re-applies runtimeFilters to the bank; effective list must match that
+ * subset by length and question text order. Choice multisets must match
+ * the corresponding bank question (order may differ from shuffle).
  */
 export function snapshotMatchesQuiz(
   snapshot: SessionSnapshot,
   quiz: Quiz,
 ): boolean {
-  if (snapshot.effectiveQuestions.length !== quiz.questions.length) {
+  const runtimeFilters = snapshotRuntimeFilters(snapshot);
+  const expected = filterQuestionsByMetadata(quiz.questions, runtimeFilters);
+  if (expected.length === 0) return false;
+  if (snapshot.effectiveQuestions.length !== expected.length) {
     return false;
   }
-  for (let i = 0; i < quiz.questions.length; i++) {
+  for (let i = 0; i < expected.length; i++) {
     const eff = snapshot.effectiveQuestions[i]!;
-    const can = quiz.questions[i]!;
+    const can = expected[i]!;
+    if (eff.text !== can.text) return false;
     if (eff.choices.length !== can.choices.length) return false;
     // Same multiset of choice strings (order may differ)
     const a = [...eff.choices].sort();
@@ -187,7 +233,6 @@ export function snapshotMatchesQuiz(
     for (let c = 0; c < a.length; c++) {
       if (a[c] !== b[c]) return false;
     }
-    if (eff.text !== can.text) return false;
   }
   return true;
 }
