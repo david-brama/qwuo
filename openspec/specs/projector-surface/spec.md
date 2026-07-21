@@ -72,6 +72,17 @@ The projector UI MUST provide a visible **Next** button that advances the sessio
 - **WHEN** the host activates the Next button
 - **THEN** the session advances one step in the phase machine and the UI reflects the new phase
 
+### Requirement: Projector fullscreen control
+The projector UI MUST provide a visible control that requests browser fullscreen for the projector page (and exits fullscreen when already active), when the Fullscreen API is available. When the API is unavailable, the control MAY be hidden. Fullscreen MUST NOT be required for normal host operation.
+
+#### Scenario: Enter fullscreen
+- **WHEN** the host activates the fullscreen control while not in fullscreen and the API is available
+- **THEN** the browser enters fullscreen for the projector document
+
+#### Scenario: Exit fullscreen
+- **WHEN** the host activates the fullscreen control while already in fullscreen
+- **THEN** the browser exits fullscreen
+
 ### Requirement: Projector shows configured question metadata on slides
 When the projector state includes a current `question` object and that question’s `slideMetadata` array is non-empty, the projector UI MUST display those metadata entries on the slide (readable labels/values) during phases that show the question content. Entries MUST appear in the order provided by projector state. Values MUST be rendered as plain text (escaped), not as Markdown. When `slideMetadata` is missing or empty, the projector MUST NOT reserve a required metadata chrome region (behavior matches today’s question-only layout).
 

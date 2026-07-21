@@ -16,6 +16,7 @@ import { Session } from "./src/session.ts";
 import {
   createPlayerHandler,
   createProjectorHandler,
+  loadLogoDataUrl,
   type SessionPersistHooks,
 } from "./src/http.ts";
 import {
@@ -115,14 +116,21 @@ const hooks: SessionPersistHooks = {
 };
 
 const joinUrl = playerJoinUrl(config, sessionId);
+const logoDataUrl = await loadLogoDataUrl();
 
 const projectorHandler = createProjectorHandler(
   session,
   config,
   sessionId,
   hooks,
+  logoDataUrl,
 );
-const playerHandler = createPlayerHandler(session, sessionId, hooks);
+const playerHandler = createPlayerHandler(
+  session,
+  sessionId,
+  hooks,
+  logoDataUrl,
+);
 
 function onListenError(
   role: string,

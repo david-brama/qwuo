@@ -111,6 +111,26 @@ body {
   font-weight: 700;
 }
 
+/* Optional gitignored logo.png — top-right branding */
+.brand-logo {
+  position: absolute;
+  top: 1.25rem;
+  right: 1.25rem;
+  max-height: 36px;
+  max-width: min(220px, 28vw);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  z-index: 11;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* When logo is present, keep compact QR below it */
+.shell.has-logo .qr-small {
+  top: 4.25rem;
+}
+
 .qr-small {
   position: absolute;
   top: 1.25rem;
@@ -523,8 +543,9 @@ body {
   padding: 0.5rem 0;
 }
 
-/* Leave room for fixed QR when filter panel is open */
-.shell.has-filter-panel .qr-small {
+/* Leave room for fixed QR / logo when filter panel is open */
+.shell.has-filter-panel .qr-small,
+.shell.has-filter-panel .brand-logo {
   right: calc(clamp(260px, 22vw, 320px) + 1rem);
 }
 
@@ -547,7 +568,8 @@ body {
   .filter-panel-toggle {
     display: flex;
   }
-  .shell.has-filter-panel .qr-small {
+  .shell.has-filter-panel .qr-small,
+  .shell.has-filter-panel .brand-logo {
     right: 1.25rem;
   }
 }
@@ -754,7 +776,8 @@ body {
 
 .ghost-btn,
 #back-btn,
-#reset-btn {
+#reset-btn,
+#fs-btn {
   background: transparent;
   color: var(--text);
   border: 2px solid var(--border);
@@ -763,7 +786,8 @@ body {
   min-width: 120px;
 }
 .ghost-btn:hover:not(:disabled),
-#back-btn:hover:not(:disabled) {
+#back-btn:hover:not(:disabled),
+#fs-btn:hover:not(:disabled) {
   border-color: var(--accent);
   background: var(--surface);
   color: #fff;
@@ -809,6 +833,34 @@ body {
   padding: 1.25rem;
   max-width: 480px;
   margin: 0 auto;
+  position: relative;
+}
+
+/* Top bar: brand/title left, optional logo top-right */
+.player-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.player-top-left {
+  min-width: 0;
+  flex: 1;
+}
+
+.player-top .brand-logo {
+  position: static;
+  flex-shrink: 0;
+  align-self: flex-start;
+  max-height: 32px;
+  max-width: min(140px, 42vw);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
 }
 
 .brand {
@@ -824,7 +876,7 @@ body {
   font-size: 1.15rem;
   font-weight: 600;
   color: var(--muted);
-  margin-bottom: 1.5rem;
+  margin-bottom: 0;
 }
 
 .card {

@@ -5,7 +5,11 @@ import {
   MD_RENDER_JS,
 } from "./markdown.ts";
 
-export function projectorHtml(joinUrl: string, qrSvgMarkup: string): string {
+export function projectorHtml(
+  joinUrl: string,
+  qrSvgMarkup: string,
+  logoHtml = "",
+): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -15,7 +19,8 @@ export function projectorHtml(joinUrl: string, qrSvgMarkup: string): string {
   <style>${PROJECTOR_CSS}</style>
 </head>
 <body>
-  <div class="shell" id="shell">
+  <div class="shell${logoHtml ? " has-logo" : ""}" id="shell">
+    ${logoHtml}
     <div id="qr-small" class="qr-small" hidden title="Show join QR" role="button" tabindex="0">${qrSvgMarkup}</div>
     <div id="qr-modal" class="qr-modal" hidden>
       <div class="qr-modal-backdrop" data-close></div>
@@ -56,6 +61,7 @@ export function projectorHtml(joinUrl: string, qrSvgMarkup: string): string {
           Text size
           <input type="range" id="font-scale" min="0.7" max="1.6" step="0.05" value="1" />
         </label>
+        <button type="button" id="fs-btn" class="ghost-btn" title="Toggle fullscreen">Fullscreen</button>
         <button type="button" id="reset-btn" class="ghost-btn danger-btn">Reset</button>
         <button type="button" id="back-btn" class="ghost-btn" disabled>Back</button>
         <button type="button" id="next-btn">Next</button>
@@ -84,6 +90,7 @@ export function projectorHtml(joinUrl: string, qrSvgMarkup: string): string {
     const backBtn = document.getElementById("back-btn");
     const nextBtn = document.getElementById("next-btn");
     const resetBtn = document.getElementById("reset-btn");
+    const fsBtn = document.getElementById("fs-btn");
     const qrSmall = document.getElementById("qr-small");
     const qrModal = document.getElementById("qr-modal");
     const fontScale = document.getElementById("font-scale");
@@ -146,6 +153,54 @@ export function projectorHtml(joinUrl: string, qrSvgMarkup: string): string {
     } catch (_) {}
 
     fontScale.addEventListener("input", () => applyFontScale(fontScale.value));
+
+    function isFullscreen() {
+      return !!(document.fullscreenElement || document.webkitFullscreenElement);
+    }
+
+    function fullscreenSupported() {
+      const el = document.documentElement;
+      return !!(
+        el.requestFullscreen ||
+        el.webkitRequestFullscreen ||
+        document.exitFullscreen ||
+        document.webkitExitFullscreen
+      );
+    }
+
+    function updateFullscreenBtn() {
+      if (!fsBtn) return;
+      if (!fullscreenSupported()) {
+        fsBtn.hidden = true;
+        return;
+      }
+      fsBtn.hidden = false;
+      const on = isFullscreen();
+      fsBtn.textContent = on ? "Exit full" : "Fullscreen";
+      fsBtn.setAttribute("aria-pressed", on ? "true" : "false");
+      fsBtn.title = on ? "Exit fullscreen" : "Enter fullscreen";
+    }
+
+    async function toggleFullscreen() {
+      try {
+        if (isFullscreen()) {
+          if (document.exitFullscreen) await document.exitFullscreen();
+          else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+        } else {
+          const el = document.documentElement;
+          if (el.requestFullscreen) await el.requestFullscreen();
+          else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+        }
+      } catch (err) {
+        console.error("Fullscreen failed:", err);
+      }
+      updateFullscreenBtn();
+    }
+
+    fsBtn.addEventListener("click", () => toggleFullscreen());
+    document.addEventListener("fullscreenchange", updateFullscreenBtn);
+    document.addEventListener("webkitfullscreenchange", updateFullscreenBtn);
+    updateFullscreenBtn();
 
     function esc(s) {
       return String(s)

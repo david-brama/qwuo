@@ -8,6 +8,54 @@ import { playerHtml } from "./player_ui.ts";
 
 const MAX_BODY_BYTES = 4096;
 
+/** Optional branding: gitignored `logo.png` in the working directory. */
+const LOGO_PATH = "logo.png";
+
+let logoDataUrlCache: string | null | undefined;
+
+/**
+ * Load logo.png once if present. Returns a data URL for inline `<img src>`,
+ * or null when the file is missing / unreadable (UI simply omits the logo).
+ */
+export async function loadLogoDataUrl(
+  path: string = LOGO_PATH,
+): Promise<string | null> {
+  if (logoDataUrlCache !== undefined && path === LOGO_PATH) {
+    return logoDataUrlCache;
+  }
+  try {
+    const bytes = await Deno.readFile(path);
+    if (bytes.byteLength === 0) {
+      if (path === LOGO_PATH) logoDataUrlCache = null;
+      return null;
+    }
+    let binary = "";
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    }
+    const dataUrl = `data:image/png;base64,${btoa(binary)}`;
+    if (path === LOGO_PATH) logoDataUrlCache = dataUrl;
+    return dataUrl;
+  } catch {
+    if (path === LOGO_PATH) logoDataUrlCache = null;
+    return null;
+  }
+}
+
+/** Test helper: clear memoized logo load. */
+export function resetLogoCache(): void {
+  logoDataUrlCache = undefined;
+}
+
+function logoMarkup(logoDataUrl: string | null): string {
+  if (!logoDataUrl) return "";
+  const src = logoDataUrl
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;");
+  return `<img class="brand-logo" src="${src}" alt="" />`;
+}
+
 /** Join: 10/min per client IP. Answer: 60/min (poll-safe headroom). */
 const JOIN_LIMIT = { max: 10, windowMs: 60_000 };
 const ANSWER_LIMIT = { max: 60, windowMs: 60_000 };
@@ -214,10 +262,11 @@ export function createProjectorHandler(
   config: Config,
   sessionId: string,
   hooks?: SessionPersistHooks,
+  logoDataUrl: string | null = null,
 ) {
   const joinUrl = playerJoinUrl(config, sessionId);
   const qr = qrSvg(joinUrl);
-  const page = projectorHtml(joinUrl, qr);
+  const page = projectorHtml(joinUrl, qr, logoMarkup(logoDataUrl));
 
   return async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
@@ -315,8 +364,9 @@ export function createPlayerHandler(
   session: Session,
   sessionId: string,
   hooks?: SessionPersistHooks,
+  logoDataUrl: string | null = null,
 ) {
-  const page = playerHtml();
+  const page = playerHtml(logoMarkup(logoDataUrl));
 
   return async (
     req: Request,

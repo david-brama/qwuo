@@ -92,6 +92,10 @@ PUBLIC_URL=https://YOUR-SUBDOMAIN.trycloudflare.com deno task start
 
 `SESSION_PATH` is removed. Old `.qwuo/session.json` is not loaded; snapshots are now `{SESSIONS_DIR}/{uuid}.json`.
 
+### Optional logo
+
+Place a gitignored `logo.png` next to `main.ts` (repo root). If present at startup, it appears in the **top right** of the projector and player UIs. Missing file is fine — branding is simply omitted.
+
 ### Question filters
 
 At startup you can keep only questions whose per-question `metadata` matches one or more filters. Filters do **not** rewrite the quiz file; they only shrink the in-memory bank for that process.

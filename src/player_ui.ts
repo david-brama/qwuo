@@ -5,7 +5,7 @@ import {
   MD_RENDER_JS,
 } from "./markdown.ts";
 
-export function playerHtml(): string {
+export function playerHtml(logoHtml = ""): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -15,9 +15,14 @@ export function playerHtml(): string {
   <style>${PLAYER_CSS}</style>
 </head>
 <body>
-  <div class="shell">
-    <div class="brand">Live Training</div>
-    <div class="title" id="quiz-title">…</div>
+  <div class="shell${logoHtml ? " has-logo" : ""}">
+    <div class="player-top">
+      <div class="player-top-left">
+        <div class="brand">Live Training</div>
+        <div class="title" id="quiz-title">…</div>
+      </div>
+      ${logoHtml}
+    </div>
 
     <div class="card">
       <!-- JOIN -->

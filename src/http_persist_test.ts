@@ -6,7 +6,9 @@ import { playerJoinUrl } from "./config.ts";
 import {
   createPlayerHandler,
   createProjectorHandler,
+  loadLogoDataUrl,
   parseSessionPath,
+  resetLogoCache,
   type SessionPersistHooks,
 } from "./http.ts";
 
@@ -216,6 +218,70 @@ Deno.test("session-scoped UI and state serve for active id", async () => {
   assertEquals(st.status, 200);
   const body = await st.json();
   assertEquals(body.title, "HTTP Persist");
+});
+
+Deno.test("UI omits logo when none provided", async () => {
+  const session = new Session(quiz);
+  const projector = createProjectorHandler(session, config, SESSION_ID);
+  const player = createPlayerHandler(session, SESSION_ID);
+
+  const projHtml = await (await projector(new Request(api("/")))).text();
+  assertEquals(projHtml.includes('<img class="brand-logo"'), false);
+  assertEquals(projHtml.includes('class="shell has-logo"'), false);
+
+  const playHtml = await (await player(new Request(api("/")))).text();
+  assertEquals(playHtml.includes('<img class="brand-logo"'), false);
+  assertEquals(playHtml.includes('class="shell has-logo"'), false);
+});
+
+Deno.test("UI embeds logo data URL top-right when provided", async () => {
+  const session = new Session(quiz);
+  const dataUrl =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  const projector = createProjectorHandler(
+    session,
+    config,
+    SESSION_ID,
+    undefined,
+    dataUrl,
+  );
+  const player = createPlayerHandler(session, SESSION_ID, undefined, dataUrl);
+
+  const projHtml = await (await projector(new Request(api("/")))).text();
+  assertEquals(projHtml.includes('<img class="brand-logo"'), true);
+  assertEquals(projHtml.includes('class="shell has-logo"'), true);
+  assertEquals(projHtml.includes(dataUrl), true);
+
+  const playHtml = await (await player(new Request(api("/")))).text();
+  assertEquals(playHtml.includes('<img class="brand-logo"'), true);
+  assertEquals(playHtml.includes('class="shell has-logo"'), true);
+  assertEquals(playHtml.includes(dataUrl), true);
+});
+
+Deno.test("loadLogoDataUrl returns null for missing file", async () => {
+  resetLogoCache();
+  const missing = await loadLogoDataUrl(
+    `.qwuo/no-such-logo-${crypto.randomUUID()}.png`,
+  );
+  assertEquals(missing, null);
+});
+
+Deno.test("loadLogoDataUrl returns data URL for PNG file", async () => {
+  resetLogoCache();
+  const dir = await Deno.makeTempDir();
+  const path = `${dir}/logo.png`;
+  // 1×1 transparent PNG
+  const png = Uint8Array.from(atob(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  ), (c) => c.charCodeAt(0));
+  try {
+    await Deno.writeFile(path, png);
+    const url = await loadLogoDataUrl(path);
+    assertEquals(typeof url, "string");
+    assertEquals(url?.startsWith("data:image/png;base64,"), true);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
 
 Deno.test("playerJoinUrl includes /s/{sessionId}", () => {

@@ -9,7 +9,7 @@
     "default": {
       "net": true,
       "write": ["./.qwuo"],
-      "read": ["quiz.json", "./.qwuo", "./node_modules"],
+      "read": ["quiz.json", "logo.png", "./.qwuo", "./node_modules"],
       "env": [
         "QUIZ_PATH",
         "QUIZ_FILTER",
