@@ -57,7 +57,7 @@
     "config": {
       "type": "object",
       "additionalProperties": true,
-      "description": "Optional quiz presentation/config. Omitted or null → absent at load. Not part of quiz fingerprint. Runtime retains known fields only (slideMetadataKeys).",
+      "description": "Optional quiz presentation/config. Omitted or null → absent at load. Not part of quiz fingerprint. Runtime retains known fields only (slideMetadataKeys, countdownSeconds).",
       "properties": {
         "slideMetadataKeys": {
           "type": "array",
@@ -68,6 +68,11 @@
             "pattern": "\\S"
           },
           "uniqueItems": true
+        },
+        "countdownSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Default QUESTION-phase countdown in whole seconds for questions that omit countdownSeconds. 0 disables countdown unless a question overrides with a positive value. Omitted/null → no quiz default."
         }
       }
     }
@@ -102,6 +107,11 @@
         "explain": {
           "type": "string",
           "description": "Optional explanation after reveal. Omitted or null → empty string at load. Markdown is supported."
+        },
+        "countdownSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Optional QUESTION-phase countdown override in whole seconds. Overrides config.countdownSeconds when set. 0 disables countdown for this question even if the quiz default is positive. Omitted/null → use quiz default (or none)."
         },
         "metadata": {
           "type": "object",

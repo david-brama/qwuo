@@ -20,41 +20,47 @@ export function projectorHtml(
 </head>
 <body>
   <div class="shell${logoHtml ? " has-logo" : ""}" id="shell">
-    ${logoHtml}
-    <div id="qr-small" class="qr-small" hidden title="Show join QR" role="button" tabindex="0">${qrSvgMarkup}</div>
-    <div id="qr-modal" class="qr-modal" hidden>
-      <div class="qr-modal-backdrop" data-close></div>
-      <div class="qr-modal-panel" role="dialog" aria-label="Join QR code">
-        <button type="button" class="qr-modal-close" data-close aria-label="Close">×</button>
-        <div class="lobby-sub">Scan to join on your phone</div>
-        <div class="qr-large">${qrSvgMarkup}</div>
-        <div class="join-url">${joinUrl.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")}</div>
+    <!-- Fixed/absolute chrome — out of flex flow -->
+    <div class="chrome" aria-hidden="false">
+      ${logoHtml}
+      <div id="qr-small" class="qr-small" hidden title="Show join QR" role="button" tabindex="0">${qrSvgMarkup}</div>
+      <div id="qr-modal" class="qr-modal" hidden>
+        <div class="qr-modal-backdrop" data-close></div>
+        <div class="qr-modal-panel" role="dialog" aria-label="Join QR code">
+          <button type="button" class="qr-modal-close" data-close aria-label="Close">×</button>
+          <div class="lobby-sub">Scan to join on your phone</div>
+          <div class="qr-large">${qrSvgMarkup}</div>
+          <div class="join-url">${joinUrl.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")}</div>
+        </div>
       </div>
+      <button type="button" class="filter-panel-toggle" id="filter-toggle" hidden aria-expanded="false" aria-controls="filter-panel">Filter</button>
+      <aside class="filter-panel" id="filter-panel" hidden aria-label="Question filters">
+        <div class="filter-panel-header">
+          <div class="filter-panel-title">Filters</div>
+          <div class="filter-panel-count" id="filter-count">—</div>
+        </div>
+        <div class="filter-panel-hint" id="filter-hint">One value per field · combined as intersection</div>
+        <div class="filter-panel-body" id="filter-body">
+          <div class="filter-panel-empty">Loading filters…</div>
+        </div>
+        <div class="filter-panel-actions">
+          <button type="button" class="filter-clear-btn" id="filter-clear">Clear</button>
+          <button type="button" class="filter-apply-btn" id="filter-apply">Apply</button>
+        </div>
+        <div class="filter-panel-error" id="filter-error" hidden></div>
+      </aside>
     </div>
-    <button type="button" class="filter-panel-toggle" id="filter-toggle" hidden aria-expanded="false" aria-controls="filter-panel">Filter</button>
-    <aside class="filter-panel" id="filter-panel" hidden aria-label="Question filters">
-      <div class="filter-panel-header">
-        <div class="filter-panel-title">Filters</div>
-        <div class="filter-panel-count" id="filter-count">—</div>
-      </div>
-      <div class="filter-panel-hint" id="filter-hint">One value per field · combined as intersection</div>
-      <div class="filter-panel-body" id="filter-body">
-        <div class="filter-panel-empty">Loading filters…</div>
-      </div>
-      <div class="filter-panel-actions">
-        <button type="button" class="filter-clear-btn" id="filter-clear">Clear</button>
-        <button type="button" class="filter-apply-btn" id="filter-apply">Apply</button>
-      </div>
-      <div class="filter-panel-error" id="filter-error" hidden></div>
-    </aside>
-    <div class="header">
+
+    <!-- Viewport flex column: header | main | footer -->
+    <header class="header" id="header">
       <div>
         <div class="phase-label" id="phase-label">LOBBY</div>
         <h1 id="quiz-title">Loading…</h1>
       </div>
-    </div>
-    <div class="main" id="main"></div>
-    <div class="footer">
+      <div class="countdown" id="countdown" hidden aria-live="polite" aria-atomic="true"></div>
+    </header>
+    <main class="main" id="main"></main>
+    <footer class="footer" id="footer">
       <div class="status-line" id="status"></div>
       <div class="footer-right">
         <label class="font-slider" title="Question text size">
@@ -66,7 +72,7 @@ export function projectorHtml(
         <button type="button" id="back-btn" class="ghost-btn" disabled>Back</button>
         <button type="button" id="next-btn">Next</button>
       </div>
-    </div>
+    </footer>
   </div>
   <script>${markedBundleScript()}</script>
   <script>${purifyBundleScript()}</script>
@@ -102,10 +108,12 @@ export function projectorHtml(
     const filterClear = document.getElementById("filter-clear");
     const filterError = document.getElementById("filter-error");
     const filterToggle = document.getElementById("filter-toggle");
+    const countdownEl = document.getElementById("countdown");
 
     let state = null;
     let navBusy = false;
     let filterBusy = false;
+    let countdownTickTimer = null;
     /** Draft selections: key -> single value string (empty = unconstrained) */
     let draftSelections = new Map();
     let facetsSignature = "";
@@ -490,11 +498,43 @@ export function projectorHtml(
       return n + "/" + total;
     }
 
+    function remainingSeconds(deadlineMs) {
+      return Math.max(0, Math.ceil((deadlineMs - Date.now()) / 1000));
+    }
+
+    function paintCountdown() {
+      const c = state && state.phase === "QUESTION" ? state.countdown : null;
+      if (!c || c.deadlineMs == null) {
+        countdownEl.hidden = true;
+        countdownEl.textContent = "";
+        countdownEl.classList.remove("urgent");
+        return;
+      }
+      const sec = remainingSeconds(c.deadlineMs);
+      countdownEl.hidden = false;
+      countdownEl.textContent = String(sec);
+      countdownEl.classList.toggle("urgent", sec <= 5);
+      countdownEl.setAttribute("aria-label", sec + " seconds remaining");
+    }
+
+    function syncCountdownTick() {
+      const active = state && state.phase === "QUESTION" && state.countdown &&
+        state.countdown.deadlineMs != null;
+      if (active && countdownTickTimer === null) {
+        countdownTickTimer = setInterval(paintCountdown, 250);
+      } else if (!active && countdownTickTimer !== null) {
+        clearInterval(countdownTickTimer);
+        countdownTickTimer = null;
+      }
+      paintCountdown();
+    }
+
     function render() {
       if (!state) return;
       quizTitle.textContent = state.title;
       phaseLabel.textContent = state.phase;
       updateNavButtons();
+      syncCountdownTick();
 
       const isLobby = state.phase === "LOBBY";
       qrSmall.hidden = isLobby;
@@ -507,9 +547,16 @@ export function projectorHtml(
         ? renderSlideMetadata(q && q.slideMetadata)
         : "";
       const hasMeta = !!metaHtml;
-      main.className = isLobby
-        ? "main lobby-main has-filter-panel"
-        : (hasMeta ? "main has-meta-rail" : "main");
+      const isLb = state.phase === "LEADERBOARD" || state.phase === "END";
+      const mainClasses = ["main"];
+      if (isLobby) mainClasses.push("lobby-main", "has-filter-panel");
+      else if (isLb) {
+        mainClasses.push("lb-main");
+        if (hasMeta) mainClasses.push("has-meta-rail");
+      } else if (hasMeta) {
+        mainClasses.push("has-meta-rail");
+      }
+      main.className = mainClasses.join(" ");
 
       const countPart = state.phase === "END"
         ? "Session complete · " + total + " question" + (total === 1 ? "" : "s")
@@ -565,7 +612,7 @@ export function projectorHtml(
         \`).join("") || \`<p class="muted">No participants yet</p>\`;
         main.innerHTML = \`
           \${metaHtml}
-          <div class="slide-content">
+          <div class="slide-content lb-slide">
             <div class="q-progress">Leaderboard · after Q\${state.questionIndex + 1} of \${total}</div>
             <div class="leaderboard">\${rows}</div>
           </div>
@@ -582,9 +629,9 @@ export function projectorHtml(
           </div>
         \`).join("");
         main.innerHTML = \`
-          <div class="slide-content">
+          <div class="slide-content lb-slide">
             <div class="end-title">Session complete</div>
-            <p class="muted" style="margin-bottom:1.5rem;font-size:1.25rem">Final standings · out of \${total}</p>
+            <p class="muted lb-end-sub">Final standings · out of \${total}</p>
             <div class="leaderboard">\${rows}</div>
           </div>
         \`;

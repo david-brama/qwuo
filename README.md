@@ -188,6 +188,12 @@ Edit `quiz.json` (or point `QUIZ_PATH` at another file):
 - Optional root `metadata` holds authoring fields and **catalogs**: `domains` / `use_cases` are arrays of allowed strings for per-question `metadata.domain` and `metadata.use-case`. When a catalog array is present, load rejects questions whose paired value is missing from that list (exact string match). Omit a catalog to allow free-form values for that field.
 - Per-question `metadata` is open-ended (`id`, `live`, `task-statement`, …) for [question filters](#question-filters) and authoring; it does not change scoring or the quiz identity fingerprint
 - Optional root `config.slideMetadataKeys` is an ordered list of question metadata keys to show on the **projector** slide (plain text). Missing keys on a question are skipped. Player UI does not show this metadata. `config` is not part of the fingerprint
+- Optional **countdown** (QUESTION phase only):
+  - `config.countdownSeconds` — quiz-wide default (non-negative integer seconds)
+  - per-question `countdownSeconds` — overrides the default for that item
+  - Resolution: question override → quiz default → none. Active only when effective value is **> 0**. **`0` disables** countdown (host-paced), including when a question sets `0` to opt out of a positive default
+  - Server starts a deadline on enter to QUESTION; projector and player show remaining whole seconds; at zero the session auto-advances to CORRECT (same scoring as host Next). Host Next/Back still work; Back into QUESTION restarts a full timer
+  - Countdown fields are not part of the quiz identity fingerprint
 - Filters never rewrite the quiz file on disk
 - Invalid or missing file → process exits with a clear error
 ## Session flow
@@ -196,11 +202,11 @@ Edit `quiz.json` (or point `QUIZ_PATH` at another file):
 LOBBY → QUESTION → CORRECT → EXPLAIN → LEADERBOARD → (next QUESTION | END)
 ```
 
-- Host advances with the projector **Next** button only
+- Host advances with the projector **Next** button only (optional countdown may auto-leave QUESTION)
 - Players get instant correct/incorrect feedback after answering
 - +1 per correct answer; late join allowed (score starts at 0)
 - Duplicate display names allowed
-- No timers; no accounts
+- No accounts
 
 ## Session persistence
 

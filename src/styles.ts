@@ -76,24 +76,66 @@ button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 export const PROJECTOR_CSS = /* css */ `
 ${SHARED_CSS}
 
-body {
+/* Full-viewport frame — nothing scrolls at the document level */
+html, body {
+  height: 100%;
+  height: 100dvh;
+  max-height: 100%;
+  max-height: 100dvh;
   overflow: hidden;
+  margin: 0;
 }
 
-.shell {
-  min-height: 100%;
+body {
   display: flex;
   flex-direction: column;
-  padding: 2rem 2.5rem 1.5rem;
+}
+
+/* App shell: flex column = header | main | footer */
+.shell {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 1.5rem 2.5rem 1.25rem;
   position: relative;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+/* Overlays (logo, QR, filters) — never participate in the column flex */
+.chrome {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+  overflow: visible;
+}
+.chrome > * {
+  pointer-events: auto;
+}
+/* Modal / fixed panels manage their own hit-testing */
+.chrome .qr-modal[hidden],
+.chrome .filter-panel[hidden],
+.chrome .filter-panel-toggle[hidden],
+.chrome .qr-small[hidden] {
+  pointer-events: none;
 }
 
 .header {
+  flex: 0 0 auto;
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  margin-bottom: 1.5rem;
   gap: 1rem;
+  padding-bottom: 1rem;
+  margin: 0;
+  z-index: 2;
+  background: var(--bg);
+  position: relative;
 }
 
 .header h1 {
@@ -109,6 +151,33 @@ body {
   letter-spacing: 0.12em;
   color: var(--accent);
   font-weight: 700;
+}
+
+/* QUESTION countdown (server deadline; whole seconds) */
+.countdown {
+  flex: 0 0 auto;
+  min-width: 3.5rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  font-size: clamp(2rem, 5vw, 3.25rem);
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: var(--text);
+  padding: 0.35rem 0.75rem;
+  border-radius: var(--radius);
+  border: 2px solid var(--border);
+  background: var(--surface);
+}
+
+.countdown.urgent {
+  color: var(--incorrect);
+  border-color: var(--incorrect);
+  outline: 2px solid transparent;
+}
+
+.countdown[hidden] {
+  display: none !important;
 }
 
 /* Optional gitignored logo.png — top-right branding */
@@ -214,18 +283,24 @@ body {
   background: var(--surface);
 }
 
+/* Middle pane — only region that scrolls / clips content */
 .main {
-  flex: 1;
+  flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  justify-content: safe center;
+  align-self: stretch;
   max-width: 1100px;
   width: 100%;
   margin: 0 auto;
   padding-right: 100px;
+  overflow-x: hidden;
   overflow-y: auto;
+  overscroll-behavior: contain;
   position: relative;
+  z-index: 1;
   --q-scale: 1;
 }
 
@@ -233,6 +308,24 @@ body {
   padding-right: 0;
   align-items: center;
   text-align: center;
+}
+
+/* Leaderboard / end standings: fill middle pane, clip list with fade */
+.main.lb-main {
+  justify-content: flex-start;
+  overflow: hidden;
+  max-width: none;
+}
+
+.slide-content.lb-slide {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 100%;
+  width: 100%;
+  max-width: 700px;
+  margin: 0 auto;
 }
 
 /* Room for fixed left metadata rail + keep question readable */
@@ -705,6 +798,29 @@ body {
   width: 100%;
   max-width: 700px;
 }
+
+/* Trim long standings: hide overflow with a long soft fade at the bottom */
+.lb-slide .leaderboard {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-width: none;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 0%,
+    #000 58%,
+    rgba(0, 0, 0, 0.55) 78%,
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    #000 0%,
+    #000 58%,
+    rgba(0, 0, 0, 0.55) 78%,
+    transparent 100%
+  );
+}
+
 .lb-row {
   display: flex;
   align-items: center;
@@ -716,6 +832,7 @@ body {
   margin-bottom: 0.6rem;
   font-size: 1.35rem;
 }
+.lb-row:last-child { margin-bottom: 0; }
 .lb-row.top3 { border-color: var(--accent); }
 .lb-rank {
   width: 2.5rem;
@@ -723,30 +840,47 @@ body {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
-.lb-name { flex: 1; font-weight: 600; }
-.lb-score { font-weight: 800; font-variant-numeric: tabular-nums; color: var(--accent); }
+.lb-name { flex: 1; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-score { font-weight: 800; font-variant-numeric: tabular-nums; color: var(--accent); flex-shrink: 0; }
 
 .end-title {
   font-size: 3rem;
   font-weight: 800;
   margin-bottom: 1rem;
+  flex-shrink: 0;
+}
+
+.lb-end-sub {
+  margin-bottom: 1.5rem;
+  font-size: 1.25rem;
+  flex-shrink: 0;
+}
+
+.lb-slide .q-progress {
+  flex-shrink: 0;
 }
 
 .footer {
+  flex: 0 0 auto;
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 1rem;
-  margin-top: 1.5rem;
+  margin: 0;
   padding-top: 1rem;
   border-top: 1px solid var(--border);
-  flex-shrink: 0;
+  flex-wrap: wrap;
+  z-index: 2;
+  background: var(--bg);
+  position: relative;
 }
 
 .footer-right {
   display: flex;
   align-items: center;
-  gap: 1.25rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.75rem 1.25rem;
 }
 
 .font-slider {
@@ -820,20 +954,29 @@ body {
 export const PLAYER_CSS = /* css */ `
 ${SHARED_CSS}
 
+html, body {
+  height: 100%;
+  height: 100dvh;
+  overflow: hidden;
+}
+
 body {
-  min-height: 100%;
-  min-height: 100dvh;
+  overscroll-behavior: none;
 }
 
 .shell {
-  min-height: 100%;
-  min-height: 100dvh;
+  height: 100%;
+  height: 100dvh;
+  max-height: 100dvh;
   display: flex;
   flex-direction: column;
   padding: 1.25rem;
+  padding-bottom: max(1.25rem, env(safe-area-inset-bottom));
   max-width: 480px;
   margin: 0 auto;
   position: relative;
+  overflow: hidden;
+  box-sizing: border-box;
 }
 
 /* Top bar: brand/title left, optional logo top-right */
@@ -843,6 +986,7 @@ body {
   justify-content: space-between;
   gap: 0.75rem 1rem;
   margin-bottom: 1.5rem;
+  flex-shrink: 0;
 }
 
 .player-top-left {
@@ -881,12 +1025,16 @@ body {
 
 .card {
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .view { display: none; }
-.view.active { display: flex; flex-direction: column; flex: 1; }
+.view.active { display: flex; flex-direction: column; flex: 1; min-height: min-content; }
 
 h2 {
   font-size: 1.5rem;
@@ -969,6 +1117,15 @@ input[type="text"]:focus { border-color: var(--accent); }
   margin-bottom: 0.5rem;
 }
 
+/* Player QUESTION countdown */
+.card .countdown {
+  display: inline-block;
+  min-width: 2.75rem;
+  margin: 0 0 0.75rem;
+  font-size: 1.5rem;
+  padding: 0.25rem 0.65rem;
+}
+
 .q-text {
   font-size: 1.35rem;
   font-weight: 600;
@@ -1015,10 +1172,11 @@ input[type="text"]:focus { border-color: var(--accent); }
 .feedback.bad .big { color: var(--incorrect); }
 
 .footer-note {
-  margin-top: auto;
-  padding-top: 1.5rem;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
   text-align: center;
   font-size: 0.8rem;
   color: var(--muted);
+  flex-shrink: 0;
 }
 `;

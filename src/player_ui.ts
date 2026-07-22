@@ -52,6 +52,7 @@ export function playerHtml(logoHtml = ""): string {
           <span class="score">Score: <span id="q-score">0</span></span>
         </div>
         <div class="q-meta" id="q-meta"></div>
+        <div class="countdown" id="q-countdown" hidden aria-live="polite" aria-atomic="true"></div>
         <div class="q-text" id="q-text"></div>
         <div class="choices" id="q-choices"></div>
         <div class="error" id="answer-error"></div>
@@ -63,6 +64,7 @@ export function playerHtml(logoHtml = ""): string {
           <span id="fb-name"></span>
           <span class="score">Score: <span id="fb-score">0</span></span>
         </div>
+        <div class="countdown" id="fb-countdown" hidden aria-live="polite" aria-atomic="true"></div>
         <div class="feedback" id="fb-box">
           <div class="big" id="fb-big"></div>
           <div class="muted" id="fb-detail"></div>
@@ -92,6 +94,7 @@ export function playerHtml(logoHtml = ""): string {
     let state = null;
     let lastFeedback = null; // { correct, correctIndex, score, questionIndex }
     let answering = false;
+    let countdownTickTimer = null;
 
     const views = {
       join: document.getElementById("view-join"),
@@ -121,6 +124,41 @@ export function playerHtml(logoHtml = ""): string {
       for (const id of ["wait-score", "q-score", "fb-score"]) {
         document.getElementById(id).textContent = String(score);
       }
+    }
+
+    function remainingSeconds(deadlineMs) {
+      return Math.max(0, Math.ceil((deadlineMs - Date.now()) / 1000));
+    }
+
+    function paintCountdownEls() {
+      const c = state && state.phase === "QUESTION" ? state.countdown : null;
+      for (const id of ["q-countdown", "fb-countdown"]) {
+        const el = document.getElementById(id);
+        if (!el) continue;
+        if (!c || c.deadlineMs == null) {
+          el.hidden = true;
+          el.textContent = "";
+          el.classList.remove("urgent");
+          continue;
+        }
+        const sec = remainingSeconds(c.deadlineMs);
+        el.hidden = false;
+        el.textContent = sec + "s";
+        el.classList.toggle("urgent", sec <= 5);
+        el.setAttribute("aria-label", sec + " seconds remaining");
+      }
+    }
+
+    function syncCountdownTick() {
+      const active = state && state.phase === "QUESTION" && state.countdown &&
+        state.countdown.deadlineMs != null;
+      if (active && countdownTickTimer === null) {
+        countdownTickTimer = setInterval(paintCountdownEls, 250);
+      } else if (!active && countdownTickTimer !== null) {
+        clearInterval(countdownTickTimer);
+        countdownTickTimer = null;
+      }
+      paintCountdownEls();
     }
 
     async function fetchState() {
@@ -154,6 +192,7 @@ export function playerHtml(logoHtml = ""): string {
 
     function render() {
       if (!state) return;
+      syncCountdownTick();
 
       if (!participantId || !state.participant) {
         show("join");

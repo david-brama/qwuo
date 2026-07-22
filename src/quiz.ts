@@ -3,6 +3,8 @@ export type Question = {
   choices: string[];
   correct: number;
   explain: string;
+  /** Optional QUESTION countdown override (seconds). 0 = disabled for this question. */
+  countdownSeconds?: number;
   metadata?: Record<string, unknown>;
 };
 
@@ -10,6 +12,8 @@ export type Question = {
 export type QuizConfig = {
   /** Ordered question.metadata keys to show on projector slides. */
   slideMetadataKeys: string[];
+  /** Default QUESTION countdown (seconds). 0 = disabled unless question overrides. */
+  countdownSeconds?: number;
 };
 
 /** One resolved metadata entry for projector slides. */
@@ -74,7 +78,25 @@ function parseMetadataField(
 }
 
 /**
- * Parse optional root `config`. Known fields only (`slideMetadataKeys`).
+ * Parse non-negative integer seconds field. Omitted/null → undefined.
+ * Rejects floats, negatives, non-numbers.
+ */
+function parseCountdownSeconds(
+  raw: unknown,
+  loc: string,
+): number | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0) {
+    throw new Error(
+      `${loc}: "countdownSeconds" must be a non-negative integer if present`,
+    );
+  }
+  return raw;
+}
+
+/**
+ * Parse optional root `config`. Known fields only
+ * (`slideMetadataKeys`, `countdownSeconds`).
  * Omitted/null → undefined. Empty object → config with empty keys list.
  */
 function parseQuizConfig(
@@ -113,7 +135,31 @@ function parseQuizConfig(
     }
   }
 
-  return { slideMetadataKeys };
+  const countdownSeconds = parseCountdownSeconds(
+    obj.countdownSeconds,
+    `${loc}: config`,
+  );
+
+  const config: QuizConfig = { slideMetadataKeys };
+  if (countdownSeconds !== undefined) {
+    config.countdownSeconds = countdownSeconds;
+  }
+  return config;
+}
+
+/**
+ * Effective countdown seconds for a question: question override → quiz
+ * default → unset (null). Active timer only when result is > 0.
+ */
+export function effectiveCountdownSeconds(
+  quiz: Quiz,
+  question: Question,
+): number | null {
+  if (question.countdownSeconds !== undefined) return question.countdownSeconds;
+  if (quiz.config?.countdownSeconds !== undefined) {
+    return quiz.config.countdownSeconds;
+  }
+  return null;
 }
 
 /**
@@ -197,6 +243,9 @@ export function copyQuestion(q: Question): Question {
     correct: q.correct,
     explain: q.explain,
   };
+  if (q.countdownSeconds !== undefined) {
+    out.countdownSeconds = q.countdownSeconds;
+  }
   if (q.metadata !== undefined) {
     out.metadata = { ...q.metadata };
   }
@@ -233,6 +282,9 @@ export function shuffleQuestionChoices(
     correct,
     explain: question.explain,
   };
+  if (question.countdownSeconds !== undefined) {
+    out.countdownSeconds = question.countdownSeconds;
+  }
   if (question.metadata !== undefined) {
     out.metadata = { ...question.metadata };
   }
@@ -591,12 +643,19 @@ export function validateQuiz(data: unknown, path: string): Quiz {
     }
 
     const qMeta = parseMetadataField(qobj.metadata, loc);
+    const countdownSeconds = parseCountdownSeconds(
+      qobj.countdownSeconds,
+      loc,
+    );
     const question: Question = {
       text: qobj.text.trim(),
       choices,
       correct: qobj.correct,
       explain,
     };
+    if (countdownSeconds !== undefined) {
+      question.countdownSeconds = countdownSeconds;
+    }
     if (qMeta !== undefined) {
       question.metadata = qMeta;
     }

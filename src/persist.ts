@@ -35,6 +35,11 @@ export type SessionSnapshot = {
    * Omitted or empty on legacy snapshots = full bank.
    */
   runtimeFilters?: MetadataFilter[];
+  /**
+   * Absolute QUESTION countdown deadline (epoch ms).
+   * Omitted/null = no active deadline (or legacy snapshot).
+   */
+  questionDeadlineMs?: number | null;
 };
 
 const PHASES: ReadonlySet<string> = new Set([
@@ -109,6 +114,9 @@ export function sessionToSnapshot(
       explain: q.explain,
     })),
     ...(runtimeFilters.length > 0 ? { runtimeFilters } : {}),
+    ...(state.questionDeadlineMs != null
+      ? { questionDeadlineMs: state.questionDeadlineMs }
+      : {}),
   };
 }
 
@@ -139,7 +147,7 @@ export function sessionFromSnapshot(
       answers,
     };
   });
-  // Restore play choice order from snapshot; attach metadata from bank match by text.
+  // Restore play choice order from snapshot; attach metadata + countdown from bank.
   const effectiveQuestions: Question[] = snapshot.effectiveQuestions.map(
     (q, i) => {
       const bankQ = expected[i]!;
@@ -149,6 +157,9 @@ export function sessionFromSnapshot(
         correct: q.correct,
         explain: q.explain,
       };
+      if (bankQ.countdownSeconds !== undefined) {
+        out.countdownSeconds = bankQ.countdownSeconds;
+      }
       if (bankQ.metadata !== undefined) {
         out.metadata = { ...bankQ.metadata };
       }
@@ -162,6 +173,7 @@ export function sessionFromSnapshot(
     participants,
     effectiveQuestions,
     runtimeFilters,
+    questionDeadlineMs: snapshot.questionDeadlineMs ?? null,
   });
 }
 
@@ -201,6 +213,14 @@ export function isValidSnapshot(data: unknown): data is SessionSnapshot {
       const fr = f as Record<string, unknown>;
       if (typeof fr.key !== "string" || !fr.key.trim()) return false;
       if (typeof fr.value !== "string") return false;
+    }
+  }
+  if (o.questionDeadlineMs !== undefined && o.questionDeadlineMs !== null) {
+    if (
+      typeof o.questionDeadlineMs !== "number" ||
+      !Number.isFinite(o.questionDeadlineMs)
+    ) {
+      return false;
     }
   }
   return true;

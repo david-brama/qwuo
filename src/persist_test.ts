@@ -443,3 +443,67 @@ Deno.test("legacy full-bank snapshot without runtimeFilters still loads", async 
   assertEquals(restored.questionCount, sampleQuiz.questions.length);
   assertEquals(restored.getRuntimeFilters(), []);
 });
+
+Deno.test("quizFingerprint ignores countdown-only differences", async () => {
+  const a = await quizFingerprint(sampleQuiz);
+  const withCd: Quiz = {
+    ...sampleQuiz,
+    config: { slideMetadataKeys: [], countdownSeconds: 30 },
+    questions: sampleQuiz.questions.map((q, i) =>
+      i === 0 ? { ...q, countdownSeconds: 45 } : { ...q }
+    ),
+  };
+  const b = await quizFingerprint(withCd);
+  assertEquals(a, b);
+});
+
+Deno.test("snapshot saves and restores future questionDeadlineMs", async () => {
+  const quiz: Quiz = {
+    ...sampleQuiz,
+    config: { slideMetadataKeys: [], countdownSeconds: 60 },
+  };
+  const session = new Session(quiz, { randomInt: alwaysZero });
+  session.advance();
+  const deadline = session.getQuestionDeadlineMs()!;
+  const fp = await quizFingerprint(quiz);
+  const snap = sessionToSnapshot(session, fp);
+  assertEquals(snap.questionDeadlineMs, deadline);
+
+  const restored = sessionFromSnapshot(quiz, snap);
+  assertEquals(restored.phase, "QUESTION");
+  assertEquals(restored.getQuestionDeadlineMs(), deadline);
+  assertEquals(restored.projectorState().countdown?.totalSeconds, 60);
+});
+
+Deno.test("snapshot restore with past deadline applies expiry", async () => {
+  const quiz: Quiz = {
+    ...sampleQuiz,
+    config: { slideMetadataKeys: [], countdownSeconds: 30 },
+  };
+  const session = new Session(quiz, { randomInt: alwaysZero });
+  session.advance();
+  const fp = await quizFingerprint(quiz);
+  const snap = sessionToSnapshot(session, fp);
+  snap.questionDeadlineMs = Date.now() - 5000;
+  const restored = sessionFromSnapshot(quiz, snap);
+  assertEquals(restored.phase, "CORRECT");
+  assertEquals(restored.projectorState().countdown, null);
+});
+
+Deno.test("legacy snapshot without deadline starts fresh countdown", async () => {
+  const quiz: Quiz = {
+    ...sampleQuiz,
+    config: { slideMetadataKeys: [], countdownSeconds: 30 },
+  };
+  const session = new Session(quiz, { randomInt: alwaysZero });
+  session.advance();
+  const fp = await quizFingerprint(quiz);
+  const snap = sessionToSnapshot(session, fp);
+  delete snap.questionDeadlineMs;
+  const before = Date.now();
+  const restored = sessionFromSnapshot(quiz, snap);
+  assertEquals(restored.phase, "QUESTION");
+  const d = restored.getQuestionDeadlineMs()!;
+  assertEquals(d > before, true);
+  assertEquals(restored.projectorState().countdown?.totalSeconds, 30);
+});

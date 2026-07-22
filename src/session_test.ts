@@ -5,6 +5,10 @@ import {
 import type { Quiz } from "./quiz.ts";
 import { Session } from "./session.ts";
 
+function delay(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 const sampleQuiz: Quiz = {
   title: "Session Shuffle",
   questions: [
@@ -355,4 +359,156 @@ Deno.test("runtime filter rejects duplicate keys (no OR)", () => {
     assertEquals((err as { status?: number }).status, 400);
   }
   assertEquals(session.questionCount, 3);
+});
+
+Deno.test("countdown starts on QUESTION with quiz default", () => {
+  const quiz: Quiz = {
+    ...sampleQuiz,
+    config: { slideMetadataKeys: [], countdownSeconds: 30 },
+  };
+  const session = new Session(quiz, { randomInt: alwaysZero });
+  assertEquals(session.projectorState().countdown, null);
+  session.advance();
+  const c = session.projectorState().countdown;
+  assertEquals(c?.totalSeconds, 30);
+  assertEquals(typeof c?.deadlineMs, "number");
+  assertEquals(c!.deadlineMs > Date.now(), true);
+  assertEquals(session.playerState().countdown?.totalSeconds, 30);
+});
+
+Deno.test("countdown uses question override over default", () => {
+  const quiz: Quiz = {
+    title: "T",
+    config: { slideMetadataKeys: [], countdownSeconds: 30 },
+    questions: [
+      {
+        text: "Q1?",
+        choices: ["A", "B"],
+        correct: 0,
+        explain: "",
+        countdownSeconds: 10,
+      },
+    ],
+  };
+  const session = new Session(quiz, { randomInt: alwaysZero });
+  session.advance();
+  assertEquals(session.projectorState().countdown?.totalSeconds, 10);
+});
+
+Deno.test("countdown zero override means no timer", () => {
+  const quiz: Quiz = {
+    title: "T",
+    config: { slideMetadataKeys: [], countdownSeconds: 30 },
+    questions: [
+      {
+        text: "Q1?",
+        choices: ["A", "B"],
+        correct: 0,
+        explain: "",
+        countdownSeconds: 0,
+      },
+    ],
+  };
+  const session = new Session(quiz, { randomInt: alwaysZero });
+  session.advance();
+  assertEquals(session.projectorState().countdown, null);
+  assertEquals(session.playerState().countdown, null);
+});
+
+Deno.test("countdown expiry auto-advances and leaves unanswered at 0", async () => {
+  const quiz: Quiz = {
+    title: "T",
+    config: { slideMetadataKeys: [], countdownSeconds: 1 },
+    questions: [
+      { text: "Q1?", choices: ["A", "B"], correct: 0, explain: "" },
+    ],
+  };
+  const session = new Session(quiz, { randomInt: alwaysZero });
+  let hookCalls = 0;
+  session.setCountdownHooks({
+    onAutoAdvance: () => {
+      hookCalls++;
+    },
+  });
+  const { id } = session.join("A");
+  session.advance();
+  assertEquals(session.phase, "QUESTION");
+  await delay(1200);
+  assertEquals(session.phase, "CORRECT");
+  assertEquals(session.projectorState().countdown, null);
+  assertEquals(session.getParticipant(id)!.score, 0);
+  assertEquals(hookCalls, 1);
+});
+
+Deno.test("host advance cancels countdown timer", async () => {
+  const quiz: Quiz = {
+    title: "T",
+    config: { slideMetadataKeys: [], countdownSeconds: 5 },
+    questions: [
+      { text: "Q1?", choices: ["A", "B"], correct: 0, explain: "" },
+    ],
+  };
+  const session = new Session(quiz, { randomInt: alwaysZero });
+  let hookCalls = 0;
+  session.setCountdownHooks({ onAutoAdvance: () => { hookCalls++; } });
+  session.advance(); // QUESTION
+  session.advance(); // CORRECT before timer
+  assertEquals(session.phase, "CORRECT");
+  assertEquals(session.projectorState().countdown, null);
+  await delay(100);
+  assertEquals(hookCalls, 0);
+});
+
+Deno.test("back into QUESTION restarts full countdown", () => {
+  const quiz: Quiz = {
+    title: "T",
+    config: { slideMetadataKeys: [], countdownSeconds: 30 },
+    questions: [
+      { text: "Q1?", choices: ["A", "B"], correct: 0, explain: "" },
+    ],
+  };
+  const session = new Session(quiz, { randomInt: alwaysZero });
+  session.advance();
+  const first = session.getQuestionDeadlineMs()!;
+  session.advance(); // CORRECT
+  assertEquals(session.projectorState().countdown, null);
+  session.back(); // QUESTION again
+  const second = session.getQuestionDeadlineMs()!;
+  assertEquals(session.phase, "QUESTION");
+  assertEquals(session.projectorState().countdown?.totalSeconds, 30);
+  assertEquals(second >= first, true);
+});
+
+Deno.test("stale timeout does not advance later question", async () => {
+  const quiz: Quiz = {
+    title: "T",
+    config: { slideMetadataKeys: [], countdownSeconds: 1 },
+    questions: [
+      { text: "Q1?", choices: ["A", "B"], correct: 0, explain: "" },
+      { text: "Q2?", choices: ["X", "Y"], correct: 0, explain: "" },
+    ],
+  };
+  const session = new Session(quiz, { randomInt: alwaysZero });
+  session.advance(); // Q0 QUESTION
+  // Rapid host advance through Q0 cycle before 1s timer
+  session.advance(); // CORRECT
+  session.advance(); // EXPLAIN
+  session.advance(); // LEADERBOARD
+  session.advance(); // Q1 QUESTION
+  assertEquals(session.phase, "QUESTION");
+  assertEquals(session.questionIndex, 1);
+  const deadline = session.getQuestionDeadlineMs();
+  await delay(1200);
+  // Q1 should still be QUESTION (its own 1s timer may have also fired) —
+  // if Q1's timer fired, phase is CORRECT at index 1, not past it via stale Q0.
+  assertEquals(session.questionIndex, 1);
+  assertEquals(
+    session.phase === "QUESTION" || session.phase === "CORRECT",
+    true,
+  );
+  // Ensure we did not skip to Q2 or END from a double-fire
+  assertNotEquals(session.phase, "END");
+  if (session.phase === "QUESTION") {
+    assertEquals(session.getQuestionDeadlineMs() !== null || deadline === null, true);
+  }
 });

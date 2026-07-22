@@ -1,6 +1,7 @@
 import {
   buildMetadataFilterFacets,
   copyQuestion,
+  effectiveCountdownSeconds,
   filterQuestionsByMetadata,
   resolveSlideMetadata,
   shuffleQuestionChoices,
@@ -10,6 +11,17 @@ import {
   type Quiz,
   type RandomInt,
 } from "./quiz.ts";
+
+/** Countdown payload for projector/player state during QUESTION. */
+export type CountdownState = {
+  totalSeconds: number;
+  deadlineMs: number;
+};
+
+/** Hooks for countdown auto-advance side effects (e.g. durable save). */
+export type CountdownHooks = {
+  onAutoAdvance?: () => void | Promise<void>;
+};
 
 export type Phase =
   | "LOBBY"
@@ -46,6 +58,11 @@ export type SessionHydrate = {
   effectiveQuestions: Question[];
   /** Runtime metadata filters (empty = full process bank). */
   runtimeFilters?: MetadataFilter[];
+  /**
+   * Absolute QUESTION deadline (epoch ms). Null/omitted = no active deadline
+   * (or legacy snapshot — caller may start a fresh countdown).
+   */
+  questionDeadlineMs?: number | null;
 };
 
 /** Server-side name cap (matches player input maxlength). */
@@ -122,6 +139,15 @@ export class Session {
   private nextJoinOrder = 0;
   private readonly randomInt?: RandomInt;
 
+  /** Absolute deadline for current QUESTION countdown; null if none. */
+  private questionDeadlineMs: number | null = null;
+  /** Effective total seconds for the active countdown (for client display). */
+  private countdownTotalSeconds: number | null = null;
+  /** Incremented each time a QUESTION countdown is armed; stale timers no-op. */
+  private countdownGeneration = 0;
+  private countdownTimer: ReturnType<typeof setTimeout> | null = null;
+  private countdownHooks: CountdownHooks = {};
+
   constructor(quiz: Quiz, options?: SessionOptions) {
     this.quiz = quiz;
     this.randomInt = options?.randomInt;
@@ -134,6 +160,145 @@ export class Session {
     } else {
       this.playQuestions = this.buildShuffledPlayQuestions(this.runtimeFilters);
     }
+  }
+
+  /** Register hooks (e.g. durable save) invoked after countdown auto-advance. */
+  setCountdownHooks(hooks: CountdownHooks): void {
+    this.countdownHooks = hooks;
+  }
+
+  /** Current absolute QUESTION deadline, or null. */
+  getQuestionDeadlineMs(): number | null {
+    return this.questionDeadlineMs;
+  }
+
+  private clearCountdownTimer(): void {
+    if (this.countdownTimer !== null) {
+      clearTimeout(this.countdownTimer);
+      this.countdownTimer = null;
+    }
+  }
+
+  /** Clear deadline + timer without changing phase. */
+  private clearCountdown(): void {
+    this.clearCountdownTimer();
+    this.questionDeadlineMs = null;
+    this.countdownTotalSeconds = null;
+  }
+
+  /**
+   * Arm countdown for the current QUESTION from effective duration.
+   * Cancels any prior timer first.
+   */
+  private startCountdownForCurrentQuestion(): void {
+    this.clearCountdownTimer();
+    const effective = effectiveCountdownSeconds(this.quiz, this.currentQuestion);
+    if (effective === null || effective <= 0) {
+      this.questionDeadlineMs = null;
+      this.countdownTotalSeconds = null;
+      return;
+    }
+    this.countdownGeneration += 1;
+    const gen = this.countdownGeneration;
+    this.countdownTotalSeconds = effective;
+    this.questionDeadlineMs = Date.now() + effective * 1000;
+    this.scheduleCountdownExpiry(gen);
+  }
+
+  /**
+   * Restore or start a countdown while phase is already QUESTION (hydrate path).
+   * - future deadlineMs → use it
+   * - past deadlineMs → apply expiry immediately (QUESTION→CORRECT)
+   * - null/undefined deadline + effective > 0 → fresh full countdown
+   * - no effective countdown → clear
+   */
+  restoreCountdown(deadlineMs: number | null | undefined): void {
+    this.clearCountdownTimer();
+    if (this.phase !== "QUESTION") {
+      this.questionDeadlineMs = null;
+      this.countdownTotalSeconds = null;
+      return;
+    }
+    const effective = effectiveCountdownSeconds(this.quiz, this.currentQuestion);
+    if (effective === null || effective <= 0) {
+      this.questionDeadlineMs = null;
+      this.countdownTotalSeconds = null;
+      return;
+    }
+
+    if (deadlineMs === null || deadlineMs === undefined) {
+      // Legacy snapshot: start a new full countdown from now
+      this.startCountdownForCurrentQuestion();
+      return;
+    }
+
+    if (!Number.isFinite(deadlineMs)) {
+      this.startCountdownForCurrentQuestion();
+      return;
+    }
+
+    const now = Date.now();
+    if (deadlineMs <= now) {
+      // Overdue: apply expiry (same as timer fire)
+      this.questionDeadlineMs = null;
+      this.countdownTotalSeconds = null;
+      if (this.phase === "QUESTION") {
+        this.phase = "CORRECT";
+      }
+      return;
+    }
+
+    this.countdownGeneration += 1;
+    const gen = this.countdownGeneration;
+    this.countdownTotalSeconds = effective;
+    this.questionDeadlineMs = deadlineMs;
+    this.scheduleCountdownExpiry(gen);
+  }
+
+  private scheduleCountdownExpiry(generation: number): void {
+    this.clearCountdownTimer();
+    if (this.questionDeadlineMs === null) return;
+    const delay = Math.max(0, this.questionDeadlineMs - Date.now());
+    this.countdownTimer = setTimeout(() => {
+      this.countdownTimer = null;
+      this.onCountdownFire(generation);
+    }, delay);
+  }
+
+  private onCountdownFire(generation: number): void {
+    if (generation !== this.countdownGeneration) return;
+    if (this.phase !== "QUESTION") return;
+    // Unanswered stay at 0 — same as host advance from QUESTION
+    this.phase = "CORRECT";
+    this.clearCountdown();
+    const hook = this.countdownHooks.onAutoAdvance;
+    if (hook) {
+      try {
+        const result = hook();
+        if (result && typeof (result as Promise<void>).then === "function") {
+          (result as Promise<void>).catch((err) => {
+            console.error("Countdown auto-advance save failed:", err);
+          });
+        }
+      } catch (err) {
+        console.error("Countdown auto-advance hook failed:", err);
+      }
+    }
+  }
+
+  private countdownPayload(): CountdownState | null {
+    if (
+      this.phase !== "QUESTION" ||
+      this.questionDeadlineMs === null ||
+      this.countdownTotalSeconds === null ||
+      this.countdownTotalSeconds <= 0
+    ) {
+      return null;
+    }
+    return {
+      totalSeconds: this.countdownTotalSeconds,
+      deadlineMs: this.questionDeadlineMs,
+    };
   }
 
   /** Process bank size (startup-filtered quiz). */
@@ -233,6 +398,8 @@ export class Session {
         answers: new Map(p.answers),
       });
     }
+    // Restore countdown last so phase/index are set; may advance overdue QUESTION.
+    session.restoreCountdown(state.questionDeadlineMs);
     return session;
   }
 
@@ -250,6 +417,7 @@ export class Session {
       })),
       effectiveQuestions: cloneQuestions(this.playQuestions),
       runtimeFilters: cloneFilters(this.runtimeFilters),
+      questionDeadlineMs: this.questionDeadlineMs,
     };
   }
 
@@ -259,6 +427,7 @@ export class Session {
    * cleared so indices stay consistent with the rebuilt playable set.
    */
   reset(): void {
+    this.clearCountdown();
     this.phase = "LOBBY";
     this.questionIndex = 0;
     this.runtimeFilters = [];
@@ -342,6 +511,7 @@ export class Session {
   }
 
   advance(): Phase {
+    const prev = this.phase;
     switch (this.phase) {
       case "LOBBY":
         this.phase = "QUESTION";
@@ -369,14 +539,17 @@ export class Session {
         // stay at END
         break;
     }
+    this.syncCountdownAfterPhaseChange(prev, this.phase);
     return this.phase;
   }
 
   /**
    * Reverse one host step (projector Back). LOBBY is a no-op.
    * Does not clear answers or scores — only phase / question index.
+   * Back into QUESTION restarts a full countdown (does not resume partial).
    */
   back(): Phase {
+    const prev = this.phase;
     switch (this.phase) {
       case "LOBBY":
         break;
@@ -407,7 +580,19 @@ export class Session {
         }
         break;
     }
+    this.syncCountdownAfterPhaseChange(prev, this.phase);
     return this.phase;
+  }
+
+  /** Start/clear countdown when phase enters or leaves QUESTION. */
+  private syncCountdownAfterPhaseChange(prev: Phase, next: Phase): void {
+    if (next === "QUESTION" && prev !== "QUESTION") {
+      this.startCountdownForCurrentQuestion();
+      return;
+    }
+    if (prev === "QUESTION" && next !== "QUESTION") {
+      this.clearCountdown();
+    }
   }
 
   /** True when Back would change phase (not LOBBY). */
@@ -458,6 +643,7 @@ export class Session {
       canApplyFilter: this.phase === "LOBBY",
       activeFilters: this.getRuntimeFilters(),
       filterFacets: this.getFilterFacets(),
+      countdown: this.countdownPayload(),
       question: q
         ? {
           text: q.text,
@@ -485,6 +671,7 @@ export class Session {
       phase: this.phase,
       questionIndex: this.questionIndex,
       questionCount: this.questionCount,
+      countdown: this.countdownPayload(),
       question: q
         ? {
           text: q.text,

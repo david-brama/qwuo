@@ -115,6 +115,11 @@ const hooks: SessionPersistHooks = {
   },
 };
 
+// Persist when QUESTION countdown auto-advances (no host Next).
+session.setCountdownHooks({
+  onAutoAdvance: () => hooks.save(),
+});
+
 const joinUrl = playerJoinUrl(config, sessionId);
 const logoDataUrl = await loadLogoDataUrl();
 

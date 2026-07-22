@@ -8,6 +8,7 @@ import {
 import {
   buildMetadataFilterFacets,
   collectQuestionMetadataKeys,
+  effectiveCountdownSeconds,
   filterQuestionsByMetadata,
   formatEmptyFilterDiagnostic,
   loadQuiz,
@@ -17,6 +18,7 @@ import {
   suggestMetadataKeys,
   validateQuiz,
   type Question,
+  type Quiz,
 } from "./quiz.ts";
 
 const minimalQuestion = {
@@ -236,6 +238,141 @@ Deno.test("validateQuiz: config drops unknown keys (known fields only)", () => {
   );
   assertEquals(quiz.config, { slideMetadataKeys: ["id"] });
   assertEquals("extra" in (quiz.config as object), false);
+});
+
+Deno.test("validateQuiz: config.countdownSeconds loaded", () => {
+  const quiz = validateQuiz(
+    minimalRoot({
+      config: { slideMetadataKeys: ["domain"], countdownSeconds: 30 },
+    }),
+    "t.json",
+  );
+  assertEquals(quiz.config, {
+    slideMetadataKeys: ["domain"],
+    countdownSeconds: 30,
+  });
+});
+
+Deno.test("validateQuiz: config.countdownSeconds zero and null", () => {
+  const zero = validateQuiz(
+    minimalRoot({ config: { countdownSeconds: 0 } }),
+    "t.json",
+  );
+  assertEquals(zero.config?.countdownSeconds, 0);
+
+  const nulled = validateQuiz(
+    minimalRoot({ config: { countdownSeconds: null } }),
+    "t.json",
+  );
+  assertEquals(nulled.config?.countdownSeconds, undefined);
+  assertEquals("countdownSeconds" in (nulled.config as object), false);
+});
+
+Deno.test("validateQuiz: config.countdownSeconds invalid rejected", () => {
+  for (const bad of [30.5, -1, "30", true, {}]) {
+    assertThrows(
+      () =>
+        validateQuiz(
+          minimalRoot({ config: { countdownSeconds: bad } }),
+          "t.json",
+        ),
+      Error,
+      "countdownSeconds",
+    );
+  }
+});
+
+Deno.test("validateQuiz: question countdownSeconds override loaded", () => {
+  const quiz = validateQuiz(
+    {
+      title: "T",
+      questions: [{ ...minimalQuestion, countdownSeconds: 45 }],
+    },
+    "t.json",
+  );
+  assertEquals(quiz.questions[0]!.countdownSeconds, 45);
+});
+
+Deno.test("validateQuiz: question countdownSeconds zero / null / invalid", () => {
+  const zero = validateQuiz(
+    {
+      title: "T",
+      questions: [{ ...minimalQuestion, countdownSeconds: 0 }],
+    },
+    "t.json",
+  );
+  assertEquals(zero.questions[0]!.countdownSeconds, 0);
+
+  const nulled = validateQuiz(
+    {
+      title: "T",
+      questions: [{ ...minimalQuestion, countdownSeconds: null }],
+    },
+    "t.json",
+  );
+  assertEquals(nulled.questions[0]!.countdownSeconds, undefined);
+
+  for (const bad of [1.5, -2, "10", false]) {
+    assertThrows(
+      () =>
+        validateQuiz(
+          {
+            title: "T",
+            questions: [{ ...minimalQuestion, countdownSeconds: bad }],
+          },
+          "t.json",
+        ),
+      Error,
+      "countdownSeconds",
+    );
+  }
+});
+
+Deno.test("effectiveCountdownSeconds resolution", () => {
+  const baseQ: Question = {
+    text: "Q?",
+    choices: ["A", "B"],
+    correct: 0,
+    explain: "",
+  };
+  const quizDefault: Quiz = {
+    title: "T",
+    config: { slideMetadataKeys: [], countdownSeconds: 30 },
+    questions: [baseQ],
+  };
+  assertEquals(effectiveCountdownSeconds(quizDefault, baseQ), 30);
+  assertEquals(
+    effectiveCountdownSeconds(quizDefault, { ...baseQ, countdownSeconds: 45 }),
+    45,
+  );
+  assertEquals(
+    effectiveCountdownSeconds(quizDefault, { ...baseQ, countdownSeconds: 0 }),
+    0,
+  );
+  const noDefault: Quiz = { title: "T", questions: [baseQ] };
+  assertEquals(effectiveCountdownSeconds(noDefault, baseQ), null);
+  assertEquals(
+    effectiveCountdownSeconds(noDefault, { ...baseQ, countdownSeconds: 10 }),
+    10,
+  );
+  const zeroDefault: Quiz = {
+    title: "T",
+    config: { slideMetadataKeys: [], countdownSeconds: 0 },
+    questions: [baseQ],
+  };
+  assertEquals(effectiveCountdownSeconds(zeroDefault, baseQ), 0);
+});
+
+Deno.test("copyQuestion and shuffle preserve countdownSeconds", () => {
+  const q0: Question = {
+    text: "Q?",
+    choices: ["A", "B", "C"],
+    correct: 0,
+    explain: "",
+    countdownSeconds: 12,
+  };
+  const copied = shuffleQuestionChoices(q0, () => 0);
+  assertEquals(copied.countdownSeconds, 12);
 });
 
 Deno.test("validateQuiz: domain catalog accepts matching values", () => {
