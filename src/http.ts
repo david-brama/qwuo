@@ -56,9 +56,9 @@ function logoMarkup(logoDataUrl: string | null): string {
   return `<img class="brand-logo" src="${src}" alt="" />`;
 }
 
-/** Join: 10/min per client IP. Answer: 60/min (poll-safe headroom). */
-const JOIN_LIMIT = { max: 10, windowMs: 60_000 };
-const ANSWER_LIMIT = { max: 60, windowMs: 60_000 };
+/** Join: 100/min per client IP. Answer: 200/min (poll-safe headroom). */
+const JOIN_LIMIT = { max: 100, windowMs: 60_000 };
+const ANSWER_LIMIT = { max: 200, windowMs: 60_000 };
 
 const SECURITY_HEADERS: Record<string, string> = {
   "x-content-type-options": "nosniff",
