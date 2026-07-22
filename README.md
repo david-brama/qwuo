@@ -1,122 +1,285 @@
-# Live Training Quiz
+# Qwuo — Live Training Quiz
 
-Ad-hoc lockstep training quiz for instructor-led sessions. Host runs Deno on a laptop; phones join via QR (optional cloudflared tunnel). No accounts, no SaaS.
+Run a lockstep quiz on your laptop. You control the big screen (projector). Learners join on their phones by scanning a QR code. No accounts, no cloud quiz SaaS — just Deno, a JSON file, and an optional Cloudflare quick tunnel for phones.
+
+```text
+  You (host laptop)                    Learners (phones)
+  ┌─────────────────────┐              ┌────────────────┐
+  │  Projector :3000    │   QR code    │  Player :3001  │
+  │  Next / Back /      │ ──────────►  │  (via tunnel)  │
+  │  Filters / Reset    │              │  name + tap    │
+  └─────────────────────┘              └────────────────┘
+         both bind 127.0.0.1 only
+```
+
+## What you get
+
+| Surface | Who | Purpose |
+|---------|-----|---------|
+| **Projector** | You | Fullscreen-friendly slides, QR join, phase control, filters |
+| **Player** | Phones | Join with a name, answer pad, instant correct/incorrect |
+
+**Session phases** (you drive most steps with **Next** / **Back**):
+
+```text
+LOBBY → QUESTION → CORRECT → EXPLAIN → LEADERBOARD → … → END
+```
+
+- Optional per-question **countdown** can auto-leave `QUESTION` when time is up  
+- Choices are **shuffled** for the room (same order on projector and phones)  
+- **+1** per correct answer; late joiners start at 0  
+- Duplicate display names are allowed  
+- Room state is saved under `.qwuo/` so a Deno restart can resume  
+
+---
 
 ## Requirements
 
-- [Deno](https://deno.land/) 1.40+ (or 2.x)
-- [Docker](https://docs.docker.com/get-docker/) + Compose for public phone access (runs `cloudflare/cloudflared:latest`)
-- Optional: [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/) on PATH if you prefer native (`TUNNEL_MODE=native`)
+- [Deno](https://deno.land/) **1.40+** (or 2.x)
+- For phones off your laptop: [Docker](https://docs.docker.com/get-docker/) + Compose (default tunnel), **or** [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation/) on your `PATH`
 
-## Quick start (training room — recommended)
+---
 
-One command starts a Cloudflare quick tunnel to the **player** port (via Docker Compose by default), sets `PUBLIC_URL`, and runs the app:
+## Quick start (training room)
+
+**Recommended:** one command starts a quick tunnel to the **player** port, sets `PUBLIC_URL`, and runs the app.
 
 ```bash
 deno task start:tunnel
-# or: ./scripts/start-with-tunnel.sh
+# same as: ./scripts/start-with-tunnel.sh
 ```
 
-Then open the **projector** session URL printed in the console (host only), e.g.:
+1. Open the **projector** URL printed in the console (host only), e.g.  
+   `http://127.0.0.1:3000/s/<session-uuid>/`
+2. Leave the big lobby QR on screen so phones can join.
+3. Use **Next** when you are ready for the first question.
+4. **Ctrl+C** stops Deno and tears down the tunnel the script started.
 
-```text
-http://127.0.0.1:3000/s/<session-uuid>/
-```
+Do **not** tunnel the projector port — it is localhost-only on purpose (host controls).
 
-- Phones scan the large lobby QR (tunnel origin + `/s/<session-uuid>`)
-- **Ctrl+C** stops both the quiz and the tunnel container
-- Do **not** tunnel the projector port (it binds to `127.0.0.1` only)
+If `PUBLIC_URL` is already set, the script skips starting cloudflared and just runs the app with that join origin.
 
-If `PUBLIC_URL` is already set, the script skips cloudflared and starts the app with that URL.
+### Tunnel backend
 
-Tunnel backend (`TUNNEL_MODE`):
-
-| Value | Behavior |
-|-------|----------|
+| `TUNNEL_MODE` | Behavior |
+|---------------|----------|
 | `auto` (default) | Docker Compose first, then native `cloudflared` |
-| `docker` | `docker-compose.yml` → `cloudflare/cloudflared:latest` only |
-| `native` | `cloudflared` on PATH only |
+| `docker` | Compose only (`docker-compose.yml` → `cloudflare/cloudflared:latest`) |
+| `native` | `cloudflared` on PATH only (handy on Linux if Docker can’t reach host loopback) |
 
-### Cleanup check
-
-After Ctrl+C, confirm no orphan tunnel:
+After Ctrl+C, sanity-check for orphans:
 
 ```bash
 docker compose ps
 pgrep -fl cloudflared || echo "no native cloudflared"
 ```
 
+---
+
 ## Local only (no phones)
 
-Both ports bind `127.0.0.1` only (no LAN). Without a tunnel, only the host can open the player URL:
+Both HTTP listeners bind **`127.0.0.1` only** — no LAN exposure without a tunnel.
 
 ```bash
 deno task start
 # or: deno run -P main.ts
+# hot reload while editing code: deno task dev
 ```
 
-- **Projector:** http://127.0.0.1:3000/s/\<session-uuid\>/  
-- **Player:** http://127.0.0.1:3001/s/\<session-uuid\>/  
+Console prints something like:
 
-Session UUID is printed at boot (and stored in `.qwuo/current`). For phones, use `deno task start:tunnel` (or set `PUBLIC_URL`).
+| Line | Meaning |
+|------|---------|
+| `Projector (localhost only): http://127.0.0.1:3000/s/<uuid>/` | Open this on the host |
+| `Player (localhost; tunnel this): http://127.0.0.1:3001/s/<uuid>/` | Same machine only unless tunneled |
+| `Player join URL (QR): …` | Encoded in the lobby QR |
+
+Session id is also written to `.qwuo/current` so a restart keeps the same room path.
+
+---
 
 ## Manual tunnel (optional)
 
-Docker Compose only:
+If you prefer to run the tunnel yourself:
 
 ```bash
+# Docker
 PLAYER_PORT=3001 docker compose up cloudflared
-# copy the trycloudflare URL from logs, then:
+# copy https://….trycloudflare.com from logs, then:
 PUBLIC_URL=https://YOUR-SUBDOMAIN.trycloudflare.com deno task start
 ```
 
-Or native binary:
-
 ```bash
+# Native
 cloudflared tunnel --url http://localhost:3001
 PUBLIC_URL=https://YOUR-SUBDOMAIN.trycloudflare.com deno task start
 ```
+
+---
+
+## Running a session (host checklist)
+
+1. **Start** with `deno task start:tunnel` (or local + manual tunnel).
+2. **Open projector** at the printed `/s/<uuid>/` URL.
+3. Optional: **Filter** panel (LOBBY only) to narrow questions for this room.
+4. Optional: **Fullscreen** control; **text size** slider for long stems.
+5. Learners scan QR → enter a display name (max 40 characters; up to 200 participants).
+6. **Next** leaves LOBBY into the first QUESTION.
+7. During QUESTION, phones answer once; they see correct/incorrect immediately. You still control the room pace with Next/Back (unless a countdown expires).
+8. Flow: show correct → explanation → leaderboard → next question… → END.
+9. **Back** steps one phase backward (does not wipe scores; re-entering QUESTION **restarts** a full countdown if timed).
+10. **Reset** (soft): back to LOBBY, clear runtime filters and per-question answers, **keep** names and scores, **same** session URL/QR. Snapshot is updated, not deleted.
+
+Need a brand-new empty room (no roster)? Use `SESSION_FRESH=1` at boot (see [Configuration](#configuration)).
+
+---
 
 ## Configuration
 
 | Env var | Default | Meaning |
 |---------|---------|---------|
-| `PUBLIC_URL` | _(unset)_ | Public base URL for QR / join (e.g. cloudflared URL). Fallback: `http://localhost:PLAYER_PORT`. App appends `/s/{sessionId}` |
-| `PROJECTOR_PORT` | `3000` | Projector HTTP port (localhost only) |
-| `PLAYER_PORT` | `3001` | Player HTTP port (`127.0.0.1` only; expose via cloudflared) |
-| `QUIZ_PATH` | `quiz.json` | Path to quiz content file |
-| `QUIZ_FILTER` | _(unset)_ | Optional `;`-separated metadata filters (`key=value`). See [Question filters](#question-filters) |
-| `SESSIONS_DIR` | `.qwuo` | Directory for session snapshots (`{uuid}.json`) and active pointer (`current`) |
-| `SESSION_ID` | _(unset)_ | Optional fixed session UUID; otherwise restore via pointer or mint a new one |
-| `SESSION_FRESH` | _(unset)_ | Set to `1` / `true` / `yes` to wipe active snapshot on boot and start empty LOBBY |
+| `PUBLIC_URL` | _(unset)_ | Public origin for QR / join (no trailing path). App appends `/s/{sessionId}`. Fallback origin: `http://localhost:{PLAYER_PORT}` |
+| `PROJECTOR_PORT` | `3000` | Projector HTTP port (`127.0.0.1`) |
+| `PLAYER_PORT` | `3001` | Player HTTP port (`127.0.0.1`; this is what you tunnel) |
+| `QUIZ_PATH` | `quiz.json` | Quiz content file |
+| `QUIZ_FILTER` | _(unset)_ | Startup metadata filters: `;`-separated `key=value` (see [Filters](#filters)) |
+| `SESSIONS_DIR` | `.qwuo` | Snapshots `{uuid}.json` + active pointer `current` |
+| `SESSION_ID` | _(unset)_ | Pin a session UUID; otherwise restore pointer or mint new |
+| `SESSION_FRESH` | _(unset)_ | `1` / `true` / `yes` → wipe that session’s snapshot on boot and start empty LOBBY (new UUID unless `SESSION_ID` is set) |
 
-`SESSION_PATH` is removed. Old `.qwuo/session.json` is not loaded; snapshots are now `{SESSIONS_DIR}/{uuid}.json`.
+**CLI** (after `--` when using Deno tasks):
+
+```bash
+deno run -P main.ts -- --filter live=true
+./scripts/start-with-tunnel.sh -- --filter live=true
+```
+
+Env filters are applied first, then CLI filters; together they follow the same AND/OR rules.
+
+> **Permissions:** `deno.json` grants read access to `quiz.json`, `logo.png`, and `./.qwuo` by default. A custom `QUIZ_PATH` outside those paths needs a matching permission entry (or a broader `-A` for experiments).
 
 ### Optional logo
 
-Place a gitignored `logo.png` next to `main.ts` (repo root). If present at startup, it appears in the **top right** of the projector and player UIs. Missing file is fine — branding is simply omitted.
+Drop a gitignored `logo.png` next to `main.ts` (repo root). If present at startup, it shows top-right on projector and player. Missing file is fine.
 
-### Question filters
+---
 
-At startup you can keep only questions whose per-question `metadata` matches one or more filters. Filters do **not** rewrite the quiz file; they only shrink the in-memory bank for that process.
+## Quiz file
 
-**Sources** (merged: env first, then CLI):
+Content lives in JSON (default `quiz.json`, often gitignored so banks stay private). Shape is documented in **`quiz.schema.json`** and enforced at load by `validateQuiz`.
 
-- Env: `QUIZ_FILTER` — `;`-separated `key=value` segments
-- CLI: repeatable `--filter key=value` or `--filter=key=value`
+### Minimal example
 
-**Semantics:** **AND** across different keys; **OR** for multiple values of the same key.
+```json
+{
+  "$schema": "quiz.schema.json",
+  "title": "My Training",
+  "config": {
+    "slideMetadataKeys": ["domain", "use-case"],
+    "countdownSeconds": 45
+  },
+  "metadata": {
+    "credential": "Optional exam name",
+    "domains": ["Tool Design & MCP Integration"],
+    "use_cases": ["Customer Support Resolution Agent"],
+    "note": "Catalogs constrain matching question fields when present."
+  },
+  "questions": [
+    {
+      "text": "What drives the agent loop?",
+      "choices": ["stop_reason", "A fixed sleep timer", "HTTP status codes only"],
+      "correct": 0,
+      "explain": "Keep looping while stop_reason is tool_use; stop on end_turn.",
+      "countdownSeconds": 60,
+      "metadata": {
+        "id": "Q1",
+        "live": true,
+        "domain": "Tool Design & MCP Integration",
+        "use-case": "Customer Support Resolution Agent"
+      }
+    }
+  ]
+}
+```
 
-**Quoting (required for spaces and `&`):** Metadata values often contain spaces (e.g. domain names). The shell splits unquoted words **before** the app runs; the app does **not** reassemble split tokens. Always quote values that contain spaces or shell-special characters:
+### Field guide
+
+| Field | Required | Notes |
+|-------|----------|--------|
+| `title` | yes | Non-empty quiz title |
+| `questions` | yes | At least one question |
+| `questions[].text` | yes | Prompt; **Markdown (GFM)** allowed |
+| `questions[].choices` | yes | ≥ 2 non-empty strings (authoring order on disk) |
+| `questions[].correct` | yes | **0-based** index into `choices` (must be in range) |
+| `questions[].explain` | no | After reveal; Markdown; empty → “No explanation” on projector |
+| `questions[].countdownSeconds` | no | Override quiz default; see [Countdown](#countdown) |
+| `questions[].metadata` | no | Open bag for filters / slides (`domain`, `use-case`, `live`, …) |
+| `config.slideMetadataKeys` | no | Ordered metadata keys shown on **projector** slides |
+| `config.countdownSeconds` | no | Default QUESTION timer (seconds) |
+| `metadata` (root) | no | Authoring + optional catalogs |
+
+**Catalogs (optional but recommended for large banks):**
+
+| Root catalog | Question field |
+|--------------|----------------|
+| `metadata.domains` | `metadata.domain` |
+| `metadata.use_cases` | `metadata.use-case` |
+
+When a catalog array is present, every question that sets the paired key must use an **exact** catalog string (no case-folding). Omit the catalog to allow free-form values. Non-catalog keys (`id`, `live`, `task-statement`, …) stay free-form.
+
+**Load rules worth knowing:**
+
+- Invalid or missing file → process exits with a clear error (no half-started servers).
+- Filters and runtime panel never rewrite the file on disk.
+- Fingerprint for session restore uses **title + question text/choices/correct/explain only**. Edits to `metadata`, `config`, or `countdownSeconds` alone do **not** invalidate a snapshot.
+- `quiz.json` is treated as a **trusted** authoring source; Markdown is sanitized before HTML display. Choice labels stay plain text.
+
+### Countdown
+
+Timers are optional and only apply in the **QUESTION** phase.
+
+| Setting | Role |
+|---------|------|
+| `config.countdownSeconds` | Quiz-wide default |
+| `questions[].countdownSeconds` | Per-question override |
+
+**Resolution:** question override → quiz default → none.
+
+| Effective value | Behavior |
+|-----------------|----------|
+| unset | Host-paced only (classic) |
+| `0` | Explicitly off (use on a question to opt out of a positive default) |
+| `> 0` | Server starts a deadline; UIs show remaining whole seconds |
+
+When the deadline hits, the session advances **QUESTION → CORRECT** with the same scoring as host **Next** (unanswered = 0). Host Next/Back still work anytime; **Back** into QUESTION starts a **new full** timer (does not resume leftover seconds).
+
+---
+
+## Filters
+
+Two layers stack:
+
+1. **Startup filters** (`QUIZ_FILTER` / `--filter`) shrink the process bank for the whole process.  
+2. **Projector Filters panel** (LOBBY) can narrow further for this room only.
+
+Startup-dropped questions **cannot** be brought back by the panel.
+
+### Startup filters
+
+- **AND** across different keys  
+- **OR** for multiple values of the **same** key  
+- Match rules: string equality; booleans `true`/`false`; finite numbers; `null` as `"null"`; arrays match if any element matches  
+
+Always quote values with spaces or shell specials — the app does not reassemble split tokens:
 
 ```bash
-# Live questions only
+# Live only
 deno run -P main.ts -- --filter live=true
 
-# One domain (spaces + &)
+# Domain with spaces and &
 deno run -P main.ts -- --filter "domain=Tool Design & MCP Integration"
 
-# live AND a use-case (key is use-case with a hyphen, not use_case)
+# live AND use-case (hyphenated key)
 deno run -P main.ts -- \
   --filter live=true \
   --filter "use-case=Customer Support Resolution Agent"
@@ -127,121 +290,114 @@ deno run -P main.ts -- \
   --filter "domain=Tool Design & MCP Integration" \
   --filter "domain=Prompt Engineering & Structured Output"
 
-# Env form (quote the whole assignment)
+# Env form
 QUIZ_FILTER='live=true;domain=Tool Design & MCP Integration' deno run -P main.ts
 
-# Tunnel script forwards args
-./scripts/start-with-tunnel.sh -- --filter live=true --filter "domain=Tool Design & MCP Integration"
+# Through the tunnel script
+./scripts/start-with-tunnel.sh -- --filter live=true
 ```
 
-If filters match **zero** questions, or a filter is malformed / an unknown CLI flag appears, the process exits with a non-zero status and does not start servers.
+Zero matches or a bad flag → non-zero exit, no servers.
 
 ### Projector filter panel (runtime)
 
-The projector UI has a **right-side Filters panel** for further narrowing the process bank during a room without restarting.
+- Right-side **Filters** in **LOBBY** only (hidden after you advance; Back/Reset to return)
+- One dropdown per metadata key discovered in the bank (**Any** = unconstrained)
+- **Intersection only** (one value per key — no multi-value OR in the panel)
+- **Clear** restores the full process bank (after startup filters)
+- **Reset** also clears runtime filters
 
-- One **dropdown** (single-select) per question-metadata key; values discovered from the bank (plus **Any**)
-- Selected keys combine with **intersection only** (one value per key — no multi-value OR in the panel)
-- Panel is shown **only in LOBBY** (hidden once the session advances; use Back or Reset to return)
-- **Clear** removes runtime filters and restores the full process bank
-- Host **Reset** returns to LOBBY and clears runtime filters; participants and scores are kept
-- Startup `--filter` / `QUIZ_FILTER` still define the maximum bank and may use OR within a key; the panel cannot bring back startup-dropped questions
-
-
-## Quiz file
-
-Edit `quiz.json` (or point `QUIZ_PATH` at another file):
-
-```json
-{
-  "title": "My Training",
-  "config": {
-    "slideMetadataKeys": ["domain", "use-case"]
-  },
-  "questions": [
-    {
-      "text": "Question text?",
-      "choices": ["A", "B", "C"],
-      "correct": 0,
-      "explain": "Optional explanation shown after the reveal.",
-      "metadata": {
-        "id": "Q1",
-        "live": true,
-        "domain": "Tool Design & MCP Integration",
-        "use-case": "Customer Support Resolution Agent"
-      }
-    }
-  ],
-  "metadata": {
-    "credential": "Optional exam name",
-    "domains": ["Tool Design & MCP Integration"],
-    "use_cases": ["Customer Support Resolution Agent"],
-    "note": "Catalogs list allowed values for question domain / use-case."
-  }
-}
-```
-
-- `correct` is a **0-based** index into `choices`
-- At least 2 choices per question
-- `text` and `explain` support Markdown (GFM); `quiz.json` is trusted source, rendered as HTML on projector/player
-- `explain` is optional (projector shows “No explanation” if missing)
-- Optional root `metadata` holds authoring fields and **catalogs**: `domains` / `use_cases` are arrays of allowed strings for per-question `metadata.domain` and `metadata.use-case`. When a catalog array is present, load rejects questions whose paired value is missing from that list (exact string match). Omit a catalog to allow free-form values for that field.
-- Per-question `metadata` is open-ended (`id`, `live`, `task-statement`, …) for [question filters](#question-filters) and authoring; it does not change scoring or the quiz identity fingerprint
-- Optional root `config.slideMetadataKeys` is an ordered list of question metadata keys to show on the **projector** slide (plain text). Missing keys on a question are skipped. Player UI does not show this metadata. `config` is not part of the fingerprint
-- Optional **countdown** (QUESTION phase only):
-  - `config.countdownSeconds` — quiz-wide default (non-negative integer seconds)
-  - per-question `countdownSeconds` — overrides the default for that item
-  - Resolution: question override → quiz default → none. Active only when effective value is **> 0**. **`0` disables** countdown (host-paced), including when a question sets `0` to opt out of a positive default
-  - Server starts a deadline on enter to QUESTION; projector and player show remaining whole seconds; at zero the session auto-advances to CORRECT (same scoring as host Next). Host Next/Back still work; Back into QUESTION restarts a full timer
-  - Countdown fields are not part of the quiz identity fingerprint
-- Filters never rewrite the quiz file on disk
-- Invalid or missing file → process exits with a clear error
-## Session flow
-
-```
-LOBBY → QUESTION → CORRECT → EXPLAIN → LEADERBOARD → (next QUESTION | END)
-```
-
-- Host advances with the projector **Next** button only (optional countdown may auto-leave QUESTION)
-- Players get instant correct/incorrect feedback after answering
-- +1 per correct answer; late join allowed (score starts at 0)
-- Duplicate display names allowed
-- No accounts
+---
 
 ## Session persistence
 
-Live session state (phase, question index, participants, scores, per-question answers) is written to a local JSON snapshot after each join, answer, and host advance. Restarting Deno restores that room when the quiz content still matches.
+After join, answer, advance, back, soft reset, filter apply, and countdown auto-advance, state is written to disk:
 
-- Snapshot path: `{SESSIONS_DIR}/{sessionId}.json` (default dir `.qwuo`; filename stem = session UUID)
-- Active id pointer: `{SESSIONS_DIR}/current` so restart keeps the same room URL without setting `SESSION_ID`
-- Room UI and APIs live under `/s/{sessionId}/` on both ports; join QR encodes `{PUBLIC_URL or local}/s/{sessionId}`
-- Quiz identity is fingerprinted; if you change `quiz.json` content, an old snapshot is ignored and a new LOBBY starts
-- Fresh room without deleting the file by hand:
-  - Boot: `SESSION_FRESH=1 deno task start` (clears snapshot; mints new UUID unless `SESSION_ID` is set)
-  - Runtime: `POST /s/{sessionId}/api/reset` on the **projector** port only (player port returns 403). Soft reset: LOBBY + clear filters, keep roster/scores; same UUID so printed QR stays valid
-- Snapshot is host-disk only (no cloud sync). Delete the snapshot file or use `SESSION_FRESH` when you want a clean room without prior scores
+| Path | Contents |
+|------|----------|
+| `{SESSIONS_DIR}/{sessionId}.json` | Phase, question index, roster, scores, answers, play choice order, runtime filters, countdown deadline |
+| `{SESSIONS_DIR}/current` | Active session UUID (so restart keeps the same URL) |
 
-## Layout
+**Restore** on boot when the snapshot is valid and the quiz fingerprint still matches. Otherwise you get a fresh LOBBY for that id.
 
+**Fresh empty room:**
+
+```bash
+SESSION_FRESH=1 deno task start
+# or start:tunnel with SESSION_FRESH=1
 ```
-main.ts                      Entry: load quiz, restore snapshot, start both servers
-quiz.json                    Sample content
-docker-compose.yml           cloudflare/cloudflared:latest (player port)
-scripts/start-with-tunnel.sh Tunnel + app launcher (deno task start:tunnel)
+
+**Soft Reset** (projector button): LOBBY + clear filters/answers; **keep** participants and scores; **same** UUID (QR stays valid). Does **not** delete the snapshot file — it saves the soft-reset state.
+
+Snapshots are host-disk only (no cloud sync). Delete `.qwuo/` entries if you want a manual wipe.
+
+---
+
+## Security model (short)
+
+- Projector and player both listen on **loopback only**
+- Public phones should only reach the **player** port via an ad-hoc tunnel you control
+- Projector mutating APIs reject non-local `Origin` headers
+- Join / answer endpoints are rate-limited per client IP
+- No authentication, no multi-tenant isolation — one room per process
+
+Treat the host machine and `quiz.json` as the trust boundary.
+
+---
+
+## Project layout
+
+```text
+main.ts                      Boot: load quiz → restore session → both servers
+quiz.schema.json             Documented JSON Schema for quiz files
+quiz.json                    Your bank (gitignored sample; create your own)
+docker-compose.yml           cloudflared quick tunnel → player port
+scripts/start-with-tunnel.sh deno task start:tunnel
 src/
-  config.ts          Env config
-  quiz.ts            Load + validate quiz JSON
-  session.ts         Phase machine, join, answer, scores, hydrate/reset
-  persist.ts         Local JSON snapshot load/save
-  http.ts            Projector + player HTTP handlers
-  projector_ui.ts    Projector HTML/CSS/JS
-  player_ui.ts       Player HTML/CSS/JS
-  styles.ts          Shared styling
-  qr.ts              QR SVG for join URL
+  config.ts                  Env + CLI filters
+  quiz.ts                    Load, validate, filter helpers, countdown resolve
+  session.ts                 Phases, join, answer, shuffle, countdown, filters
+  persist.ts                 Snapshot fingerprint / save / restore
+  http.ts                    Projector + player handlers
+  projector_ui.ts            Host UI
+  player_ui.ts               Phone UI
+  styles.ts                  CSS
+  qr.ts                      Join QR SVG
+  markdown.ts                Marked + DOMPurify bundles for the browser
+openspec/                    Specs and archived change proposals
 ```
 
-## Notes
+### Useful Deno tasks
 
-- Session survives Deno restart via the local snapshot and pointer (use `SESSION_FRESH` for a clean room without prior roster)
-- Player clients poll `/s/{sessionId}/api/state` about once per second
-- Participant id is stored in the phone’s `localStorage` so reload reattaches — including after server restart when the snapshot still has that id
+| Task | Command purpose |
+|------|-----------------|
+| `deno task start` | Run the app |
+| `deno task start:tunnel` | Tunnel + app |
+| `deno task dev` | Watch mode |
+| `deno task test` | Unit tests under `src/` |
+
+---
+
+## Troubleshooting
+
+| Symptom | What to try |
+|---------|-------------|
+| Phones can’t open QR URL | Use `start:tunnel` or set `PUBLIC_URL`; confirm only **player** is tunneled |
+| QR points at localhost on phones | `PUBLIC_URL` missing when the process started |
+| Quiz won’t start | Check load error on stderr; validate against `quiz.schema.json` |
+| Filter matches 0 | Exact key/value strings; `use-case` not `use_case`; quote spaces |
+| Old scores after restart | Expected if snapshot matches quiz — use **Reset** or `SESSION_FRESH=1` |
+| Snapshot ignored after editing quiz | Fingerprint changed (text/choices/correct/explain/title) — new LOBBY is intentional |
+| Custom `QUIZ_PATH` permission error | Add the path under `deno.json` → `permissions.default.read` |
+| Docker tunnel can’t reach app (Linux) | Try `TUNNEL_MODE=native` |
+
+---
+
+## Design notes
+
+- One live session per process; URL space is `/s/{sessionId}/…` on both ports  
+- Player clients poll `/api/state` about once per second; participant id lives in `localStorage` for reattach (including after server restart when the snapshot still has that id)  
+- Host **Next** / **Back** are the primary control surface; countdown is an optional pacing aid, not a required game mode  
+- Specs under `openspec/specs/` describe intended behavior for contributors  
+
+Happy training.
