@@ -391,6 +391,13 @@ function measureInPage(): Measure {
     }
   }
 
+  // The runner moves the mouse first, so the host controls must be shown
+  // (and are then checked for clipping/overlap like any other chrome)
+  const controls = document.querySelector(".footer-right");
+  if (controls && getComputedStyle(controls).visibility === "hidden") {
+    issues.push("host controls hidden right after mouse movement");
+  }
+
   // Footer must be one row
   const footer = document.getElementById("footer")!;
   const items = [...footer.querySelectorAll("button, .status-line, .font-slider")]
@@ -496,6 +503,81 @@ async function checkPresenterKeys(app: App, page: Page): Promise<string[]> {
   await page.keyboard.press("Escape");
   await pause(100);
   if (await page.isVisible("#qr-modal")) fails.push("Escape did not close the QR modal");
+  return fails;
+}
+
+// --------------------------------------------------------------------------
+// Auto-hiding host controls and the Reset confirm
+
+async function checkHostChrome(
+  app: App,
+  page: Page,
+  vp: string,
+  shot: (page: Page, name: string) => Promise<void>,
+  confirmReset: boolean,
+): Promise<string[]> {
+  const fails: string[] = [];
+  const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const phase = async () => (await projState(app)).phase;
+  const controlsShown = () =>
+    page.evaluate(() => {
+      const el = document.querySelector(".footer-right")!;
+      const cs = getComputedStyle(el);
+      return cs.visibility !== "hidden" && Number(cs.opacity) > 0.5;
+    });
+  const native: string[] = [];
+  const onDialog = (d: { type(): string; dismiss(): Promise<void> }) => {
+    native.push(d.type());
+    d.dismiss().catch(() => {});
+  };
+  page.on("dialog", onDialog);
+  const start = await phase();
+  const [w, h] = vp.split("x").map(Number);
+
+  await page.mouse.move(w / 2, h / 2 - 20);
+  await pause(400);
+  if (!(await controlsShown())) fails.push("hidden right after mouse movement");
+  await pause(3600);
+  if (await controlsShown()) fails.push("still shown after 3.6 s without mouse movement");
+  await page.mouse.move(w / 2, h / 2 + 20);
+  await pause(400);
+  if (!(await controlsShown())) fails.push("not shown again on mouse movement");
+  await pause(3600);
+  await page.keyboard.press("Shift");
+  await pause(400);
+  if (!(await controlsShown())) fails.push("not shown again on a key press");
+
+  // Reset opens the in-page confirm; Enter / Escape / arrows do not reset
+  const confirmOpen = () => page.isVisible("#reset-confirm");
+  await page.click("#reset-btn");
+  await pause(200);
+  if (!(await confirmOpen())) fails.push("Reset did not open the confirm");
+  const focused = await page.evaluate(() => document.activeElement?.id);
+  if (focused !== "reset-cancel") fails.push(`confirm focus on #${focused}, want #reset-cancel`);
+  const panel = await page.evaluate(() => {
+    const r = document.querySelector(".confirm-panel")!.getBoundingClientRect();
+    return r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight;
+  });
+  if (!panel) fails.push("confirm panel outside the viewport");
+  await shot(page, `projector-reset-confirm-${vp}`);
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Enter");
+  await pause(500);
+  if (await confirmOpen()) fails.push("Enter on Cancel did not close the confirm");
+  await page.click("#reset-btn");
+  await page.keyboard.press("Escape");
+  await pause(300);
+  if (await confirmOpen()) fails.push("Escape did not close the confirm");
+  if (await phase() !== start) fails.push(`phase changed to ${await phase()} without confirming`);
+
+  if (confirmReset) {
+    await page.click("#reset-btn");
+    await page.click("#reset-ok");
+    await pause(500);
+    if (await phase() !== "LOBBY") fails.push(`confirmed Reset left phase ${await phase()}`);
+  }
+  page.off("dialog", onDialog);
+  if (native.length) fails.push(`native dialog(s) used: ${native.join(", ")}`);
   return fails;
 }
 
@@ -620,6 +702,8 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
 
     const check = async (tag: string, label: string, shotName: string | null) => {
       for (const { vp, w, h, page } of pages) {
+        // Mouse movement shows the auto-hiding host controls
+        await page.mouse.move(w / 2 + (stats.get(vp)!.checks % 2 ? 7 : -7), h / 2);
         await page.evaluate(async () => {
           // deno-lint-ignore no-explicit-any
           await (globalThis as any).fetchState();
@@ -758,6 +842,12 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
     await shot(phone, `player-end-${phoneVp}`);
     for (const f of await checkPresenterKeys(app, pages[0].page)) {
       failures.push(`${pages[0].vp} keys: ${f}`);
+    }
+    // Last: ends with a confirmed Reset (session back in LOBBY)
+    for (const { vp, page } of pages) {
+      for (const f of await checkHostChrome(app, page, vp, shot, vp === pages.at(-1)!.vp)) {
+        failures.push(`${vp} host controls: ${f}`);
+      }
     }
   } finally {
     await browser?.close().catch(() => {});

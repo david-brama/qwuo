@@ -36,6 +36,17 @@ export function projectorHtml(
           <div class="join-url">${joinUrl.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")}</div>
         </div>
       </div>
+      <div id="reset-confirm" class="confirm-modal" hidden>
+        <div class="confirm-backdrop" data-cancel></div>
+        <div class="confirm-panel" role="alertdialog" aria-modal="true" aria-labelledby="reset-title" aria-describedby="reset-desc">
+          <h2 class="confirm-title" id="reset-title">Reset the session?</h2>
+          <p class="confirm-text" id="reset-desc">Return to the lobby and clear filters. Participants stay joined; all scores reset to 0.</p>
+          <div class="confirm-actions">
+            <button type="button" id="reset-cancel" class="ghost-btn" data-cancel>Cancel</button>
+            <button type="button" id="reset-ok" class="danger-solid-btn">Reset scores</button>
+          </div>
+        </div>
+      </div>
       <button type="button" class="filter-panel-toggle" id="filter-toggle" hidden aria-expanded="false" aria-controls="filter-panel">Filter</button>
       <aside class="filter-panel" id="filter-panel" hidden aria-label="Question filters">
         <div class="filter-panel-header">
@@ -129,6 +140,10 @@ export function projectorHtml(
     const timeBar = document.getElementById("time-bar");
     const timeBarFill = document.getElementById("time-bar-fill");
     const answeredEl = document.getElementById("answered");
+    const footer = document.getElementById("footer");
+    const resetConfirm = document.getElementById("reset-confirm");
+    const resetCancel = document.getElementById("reset-cancel");
+    const resetOk = document.getElementById("reset-ok");
 
     let state = null;
     let navBusy = false;
@@ -808,7 +823,7 @@ export function projectorHtml(
     let lastKeyNavMs = -Infinity;
 
     function anyModalOpen() {
-      return !qrModal.hidden;
+      return !qrModal.hidden || !resetConfirm.hidden;
     }
 
     document.addEventListener("keydown", (e) => {
@@ -822,7 +837,11 @@ export function projectorHtml(
         modalOpen: anyModalOpen(),
         onButton,
       });
-      if (!action) return;
+      if (!action) {
+        showControls();
+        return;
+      }
+      // Clicker presses do not flash the host controls at the audience
       e.preventDefault();
       const now = performance.now();
       if (!keyNavAllowed(now, lastKeyNavMs, KEY_NAV_DEBOUNCE_MS)) return;
@@ -840,14 +859,67 @@ export function projectorHtml(
 
     backBtn.addEventListener("click", () => postNav("/api/back"));
     nextBtn.addEventListener("click", () => postNav("/api/advance"));
-    resetBtn.addEventListener("click", () => {
+    // Reset: styled in-page confirm; Cancel has focus, so Enter/Escape
+    // cancel and no single key can reset
+    function openResetConfirm() {
       if (navBusy) return;
-      const ok = confirm(
-        "Return to lobby and clear filters? Participants stay joined; all scores reset to 0.",
-      );
-      if (!ok) return;
+      resetConfirm.hidden = false;
+      resetCancel.focus();
+    }
+
+    function closeResetConfirm() {
+      resetConfirm.hidden = true;
+      if (resetConfirm.contains(document.activeElement)) document.activeElement.blur();
+    }
+
+    resetBtn.addEventListener("click", openResetConfirm);
+    resetConfirm.addEventListener("click", (e) => {
+      if (e.target.closest("[data-cancel]")) closeResetConfirm();
+    });
+    resetOk.addEventListener("click", () => {
+      closeResetConfirm();
       postNav("/api/reset");
     });
+    resetConfirm.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeResetConfirm();
+      } else if (e.key === "Tab") {
+        // Keep focus inside the dialog
+        e.preventDefault();
+        (document.activeElement === resetCancel ? resetOk : resetCancel).focus();
+      }
+    });
+
+    // Host controls (footer buttons, slider) hide after a few idle seconds
+    // and come back on mouse movement or a non-navigation key
+    const CONTROLS_IDLE_MS = 3000;
+    let controlsTimer = null;
+    let pointerInFooter = false;
+
+    function hideControlsIfIdle() {
+      controlsTimer = null;
+      const focusInFooter = footer.contains(document.activeElement);
+      if (pointerInFooter || focusInFooter || anyModalOpen()) {
+        controlsTimer = setTimeout(hideControlsIfIdle, CONTROLS_IDLE_MS);
+        return;
+      }
+      shell.classList.add("controls-hidden");
+    }
+
+    function showControls() {
+      shell.classList.remove("controls-hidden");
+      if (controlsTimer !== null) clearTimeout(controlsTimer);
+      controlsTimer = setTimeout(hideControlsIfIdle, CONTROLS_IDLE_MS);
+    }
+
+    for (const ev of ["mousemove", "mousedown", "touchstart", "wheel"]) {
+      document.addEventListener(ev, showControls, { passive: true });
+    }
+    footer.addEventListener("mouseenter", () => { pointerInFooter = true; });
+    footer.addEventListener("mouseleave", () => { pointerInFooter = false; });
+    footer.addEventListener("focusin", showControls);
+    showControls();
 
     fetchState().catch((e) => {
       main.innerHTML = \`<p class="muted">Failed to load: \${esc(e.message)}</p>\`;

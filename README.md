@@ -173,6 +173,8 @@ PUBLIC_URL=https://YOUR-SUBDOMAIN.trycloudflare.com deno task start
 | → · PageDown · Space · Enter | Next |
 | ← · PageUp | Back |
 
+The host controls (text size, Fullscreen, Reset, Back, Next) and the mouse pointer hide after 3 s without mouse movement and come back when you move the mouse or press a key other than Next/Back (so clicker presses do not flash them at the room). **Reset** asks for confirmation in an in-page dialog; Cancel has focus, so Enter or Escape cancel.
+
 Keys are ignored while you type in a field or the filter panel, while a dialog is open, and while a key is held. Two presses within 0.4 s count as one, so a clicker double-send does not skip a slide. No key triggers Reset.
 
 Need a brand-new empty room (no roster)? Use `SESSION_FRESH=1` at boot (see [Configuration](#configuration)).
@@ -470,6 +472,7 @@ openspec/                    Specs and archived change proposals
 - the footer wraps, or question/choice text is below the floor (1080p: 40 px / 30 px; other sizes: 24 px / 20 px)
 - CORRECT/EXPLAIN do not mark exactly one choice ✓, EXPLAIN does not show the question, or the explanation (choices) fall below 30 px (22 px) at 1080p / 18 px (14 px) elsewhere
 - the countdown is missing on a timed question, shown when answers are locked, smaller than 44 px (1080p) / 28 px, or its ring or time bar overlaps the logo, QR, counter or slide
+- the host controls do not hide after 3 s idle or do not come back on mouse movement / a key, or Reset does not use the in-page confirm (Enter/Escape cancel; a native dialog fails the check)
 - a presenter key does the wrong thing (→/PageDown/Space/Enter, ←/PageUp, double press, held key, keys on the slider or with the QR modal open, Reset-like keys)
 - the leaderboard does not show the top 10 (or text is below 40 px at 1080p / 22 px elsewhere), or END has no podium
 
