@@ -313,7 +313,8 @@ export function playerHtml(logoHtml = ""): string {
         return;
       }
 
-      if (answered && (phase === "QUESTION" || revealed)) {
+      const reviewing = phase === "CORRECT" || phase === "EXPLAIN" || phase === "LEADERBOARD";
+      if ((answered && (phase === "QUESTION" || revealed)) || (reviewing && revealed)) {
         show("feedback");
         paintFeedback();
         return;
@@ -328,7 +329,7 @@ export function playerHtml(logoHtml = ""): string {
       } else if (phase === "END") {
         msg.textContent = "Session complete";
         sub.textContent = "Final score: " + score;
-      } else if (phase === "CORRECT" || phase === "EXPLAIN" || phase === "LEADERBOARD") {
+      } else if (reviewing) {
         msg.textContent = "Hang tight";
         sub.textContent = "Host is reviewing · score " + score;
       } else {
@@ -350,8 +351,12 @@ export function playerHtml(logoHtml = ""): string {
         big.textContent = ok ? "Correct" : "Incorrect";
         detail.textContent = ok
           ? "Score: " + score
-          : "Correct answer: " + (LETTERS[q.correctIndex] || String(q.correctIndex + 1)) +
-            ". " + (q.choices[q.correctIndex] || "");
+          : correctAnswerLine(q);
+      } else if (q && q.correctIndex != null && !lastFeedback) {
+        // Revealed, no answer from this player
+        box.className = "feedback missed";
+        big.textContent = "You didn't answer";
+        detail.textContent = correctAnswerLine(q);
       } else {
         // Still open: no hint of the result until the answer is revealed
         const pick = mine != null ? mine : (lastFeedback ? lastFeedback.choiceIndex : null);
@@ -364,6 +369,11 @@ export function playerHtml(logoHtml = ""): string {
       document.getElementById("fb-sub").textContent = revealedNow()
         ? "Waiting for host to continue…"
         : "Your result appears when the answer is revealed";
+    }
+
+    function correctAnswerLine(q) {
+      return "Correct answer: " + (LETTERS[q.correctIndex] || String(q.correctIndex + 1)) +
+        ". " + (q.choices[q.correctIndex] || "");
     }
 
     function revealedNow() {

@@ -686,11 +686,14 @@ async function checkPhoneOffline(
 }
 
 // --------------------------------------------------------------------------
-// Phone: the correct/incorrect result is still there after a reload
+// Phone: the correct/incorrect/"didn't answer" result is still there after a reload
 
-async function checkPhoneResult(phone: Page, wantCorrect: boolean): Promise<string[]> {
+async function checkPhoneResult(
+  phone: Page,
+  want: "Correct" | "Incorrect" | "You didn't answer",
+  wantDetail?: string,
+): Promise<string[]> {
   const fails: string[] = [];
-  const want = wantCorrect ? "Correct" : "Incorrect";
   const read = async () => {
     await phone.waitForSelector("#view-feedback.active", { timeout: 5000 })
       .catch(() => {});
@@ -701,8 +704,12 @@ async function checkPhoneResult(phone: Page, wantCorrect: boolean): Promise<stri
     ).catch(() => {});
     return (await phone.textContent("#fb-big"))?.trim() ?? "";
   };
+  const detail = async () => (await phone.textContent("#fb-detail"))?.trim() ?? "";
   const before = await read();
   if (before !== want) fails.push(`result "${before}", want "${want}"`);
+  if (wantDetail && (await detail()) !== wantDetail) {
+    fails.push(`detail "${await detail()}", want "${wantDetail}"`);
+  }
   await phone.reload();
   const after = await read();
   if (after !== want) fails.push(`after reload: result "${after}", want "${want}"`);
@@ -1100,14 +1107,22 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
       if (phoneChoice !== null) accepted++;
       await goTo(app, "CORRECT", qi);
       await check("correct", `${tag} CORRECT`, nm("correct"));
+      const shown = (await (await fetch(`${app.projector}/api/state`)).json() as {
+        question: { correct: number; choices: string[] };
+      }).question;
+      // Phone skipped Q2: "You didn't answer" plus the correct answer
+      const missedDetail = `Correct answer: ${"ABCDEFGH"[shown.correct]}. ${shown.choices[shown.correct]}`;
       if (phoneChoice !== null) {
-        const correct = (await (await fetch(`${app.projector}/api/state`)).json() as {
-          question: { correct: number };
-        }).question.correct;
-        for (const f of await checkPhoneResult(phone, phoneChoice === correct)) {
+        const want = phoneChoice === shown.correct ? "Correct" : "Incorrect";
+        for (const f of await checkPhoneResult(phone, want)) {
           failures.push(`${phoneVp} ${tag} CORRECT: ${f}`);
         }
         await shot(phone, `player-correct-reloaded-${phoneVp}`);
+      } else if (qi === 1) {
+        for (const f of await checkPhoneResult(phone, "You didn't answer", missedDetail)) {
+          failures.push(`${phoneVp} ${tag} CORRECT: ${f}`);
+        }
+        await shot(phone, `player-missed-${phoneVp}`);
       }
       if (qi === 0) {
         // Back from CORRECT: answers locked → no countdown
@@ -1124,6 +1139,15 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
       }
       await goTo(app, "LEADERBOARD", qi);
       await check("leaderboard", `${tag} LEADERBOARD`, nm("leaderboard"));
+      if (qi === 1) {
+        await phone.waitForFunction(
+          (d) => document.getElementById("view-feedback")!.classList.contains("active") &&
+            document.getElementById("fb-big")!.textContent === "You didn't answer" &&
+            document.getElementById("fb-detail")!.textContent === d,
+          missedDetail,
+          { timeout: 5000 },
+        ).catch(() => failures.push(`${phoneVp} ${tag} LEADERBOARD: phone does not show "You didn't answer" and the correct answer`));
+      }
       log(`  ${tag} checked (${failures.length} failures so far)`);
     }
     await goTo(app, "END");
