@@ -893,6 +893,21 @@ export class Session {
   }
 
   /**
+   * Score as the player may see it: while the current QUESTION is still
+   * open, its point is left out, so the score cannot give the answer away
+   * before the reveal.
+   */
+  playerScore(participantId: string): number {
+    const p = this.participants.get(participantId);
+    if (!p) return 0;
+    if (this.phase !== "QUESTION" || this.answersLocked) return p.score;
+    const choice = p.answers.get(this.questionIndex);
+    return choice !== undefined && choice === this.currentQuestion.correct
+      ? p.score - 1
+      : p.score;
+  }
+
+  /**
    * Player-facing state. The correct index is sent only once the current
    * question has been revealed (CORRECT and later, or Back to a locked
    * QUESTION), so a reload can rebuild the result without the client
@@ -925,7 +940,7 @@ export class Session {
         ? {
           id: p.id,
           name: p.name,
-          score: p.score,
+          score: this.playerScore(p.id),
           answered,
           /** This player's choice for the current question, if any. */
           choiceIndex: q ? p.answers.get(this.questionIndex) ?? null : null,

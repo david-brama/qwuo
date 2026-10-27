@@ -472,9 +472,11 @@ export function createPlayerHandler(
         const choiceIndex = typeof body.choiceIndex === "number"
           ? body.choiceIndex
           : NaN;
-        const result = session.answer(id, choiceIndex);
+        session.answer(id, choiceIndex);
         await runHook("save", hooks?.save);
-        return json(result);
+        // No correct/incorrect here: phones learn it from /api/state once
+        // the answer is revealed, so nobody can tell neighbours early
+        return json({ choiceIndex, score: session.playerScore(id) });
       }
 
       // Host-only routes rejected on player port

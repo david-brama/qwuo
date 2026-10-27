@@ -923,6 +923,20 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
         await phone.waitForSelector("#view-feedback.active", { timeout: 5000 })
           .then(() => phoneChoice = 0)
           .catch(() => failures.push(`${phoneVp} ${tag}: answer tap did not show feedback`));
+        // Before the reveal: no correct/incorrect, also not after a poll
+        await phone.waitForTimeout(1300);
+        const early = await phone.evaluate(() => ({
+          big: document.getElementById("fb-big")?.textContent ?? "",
+          cls: document.getElementById("fb-box")?.className ?? "",
+          text: document.body.innerText,
+        }));
+        if (
+          early.big !== "Answer locked in" || /\b(ok|bad)\b/.test(early.cls) ||
+          /Correct answer|Incorrect/.test(early.text)
+        ) {
+          failures.push(`${phoneVp} ${tag}: result shown before the reveal ("${early.big}", class "${early.cls}")`);
+        }
+        await shot(phone, `player-locked-in-${phoneVp}`);
       }
       // A few answers so the counters are non-zero
       // (the per-player rate limit rejects some in a fast full run)

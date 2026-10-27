@@ -512,3 +512,32 @@ Deno.test("player answer after Back from CORRECT gets 409 with clear error", asy
   assertEquals(String(body.error).includes("closed"), true);
   assertEquals(session.getParticipant(id)?.score, 0);
 });
+
+Deno.test("player answer response and state do not reveal the result during QUESTION", async () => {
+  const session = new Session(quiz);
+  const player = createPlayerHandler(session, SESSION_ID);
+  const { id } = session.join("Early");
+  session.advance(); // QUESTION
+  const correct = session.projectorState().question!.correct;
+  const res = await player(
+    new Request(api("/api/answer"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id, choiceIndex: correct }),
+    }),
+  );
+  assertEquals(res.status, 200);
+  assertEquals(await res.json(), { choiceIndex: correct, score: 0 });
+  assertEquals(session.getParticipant(id)?.score, 1);
+
+  const open = await (await player(new Request(api(`/api/state?id=${id}`)))).json();
+  assertEquals(open.question.correctIndex, null);
+  assertEquals(open.participant.score, 0);
+  assertEquals(open.participant.choiceIndex, correct);
+  assertEquals("correct" in open.question, false);
+
+  session.advance(); // CORRECT
+  const shown = await (await player(new Request(api(`/api/state?id=${id}`)))).json();
+  assertEquals(shown.question.correctIndex, correct);
+  assertEquals(shown.participant.score, 1);
+});

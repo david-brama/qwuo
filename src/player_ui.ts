@@ -69,7 +69,7 @@ export function playerHtml(logoHtml = ""): string {
           <div class="big" id="fb-big"></div>
           <div class="muted" id="fb-detail"></div>
         </div>
-        <div class="wait-sub" style="margin-top:1.5rem">Waiting for host to continue…</div>
+        <div class="wait-sub" id="fb-sub" style="margin-top:1.5rem">Waiting for host to continue…</div>
       </div>
     </div>
 
@@ -92,7 +92,7 @@ export function playerHtml(logoHtml = ""): string {
     let participantName = "";
     let score = 0;
     let state = null;
-    let lastFeedback = null; // { correct, correctIndex, score, questionIndex }
+    let lastFeedback = null; // { choiceIndex, questionIndex } until the next poll
     let answering = false;
     let renderedQuestionKey = null; // question whose buttons are on screen
     let countdownTickTimer = null;
@@ -207,7 +207,7 @@ export function playerHtml(logoHtml = ""): string {
       }
       if (phase === "LOBBY" || phase === "END") lastFeedback = null;
       const answered = state.participant.answered || !!lastFeedback;
-      const revealed = !!state.question && state.question.correctIndex != null;
+      const revealed = revealedNow();
 
       if (phase === "QUESTION" && state.answersLocked && !answered) {
         show("wait");
@@ -285,22 +285,22 @@ export function playerHtml(logoHtml = ""): string {
           ? "Score: " + score
           : "Correct answer: " + (LETTERS[q.correctIndex] || String(q.correctIndex + 1)) +
             ". " + (q.choices[q.correctIndex] || "");
-      } else if (lastFeedback) {
-        box.className = "feedback " + (lastFeedback.correct ? "ok" : "bad");
-        big.textContent = lastFeedback.correct ? "Correct" : "Incorrect";
-        if (!lastFeedback.correct && state.question) {
-          const ci = lastFeedback.correctIndex;
-          const label = LETTERS[ci] || String(ci + 1);
-          const text = state.question.choices[ci] || "";
-          detail.textContent = "Correct answer: " + label + ". " + text;
-        } else {
-          detail.textContent = "Score: " + lastFeedback.score;
-        }
       } else {
+        // Still open: no hint of the result until the answer is revealed
+        const pick = mine != null ? mine : (lastFeedback ? lastFeedback.choiceIndex : null);
         box.className = "feedback";
-        big.textContent = "Answer locked";
-        detail.textContent = "Score: " + score;
+        big.textContent = "Answer locked in";
+        detail.textContent = q && pick != null
+          ? "You picked " + (LETTERS[pick] || String(pick + 1)) + ". " + (q.choices[pick] || "")
+          : "";
       }
+      document.getElementById("fb-sub").textContent = revealedNow()
+        ? "Waiting for host to continue…"
+        : "Your result appears when the answer is revealed";
+    }
+
+    function revealedNow() {
+      return !!(state && state.question && state.question.correctIndex != null);
     }
 
     async function submitAnswer(choiceIndex) {
@@ -321,9 +321,7 @@ export function playerHtml(logoHtml = ""): string {
           return;
         }
         lastFeedback = {
-          correct: data.correct,
-          correctIndex: data.correctIndex,
-          score: data.score,
+          choiceIndex,
           questionIndex: state.questionIndex,
         };
         score = data.score;

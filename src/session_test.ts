@@ -993,3 +993,31 @@ Deno.test("player state: correct index only after reveal; own choice kept", () =
   assertEquals(locked.question!.correctIndex, session.projectorState().question!.correct);
   assertNotEquals(locked.participant!.choiceIndex, null);
 });
+
+Deno.test("player score leaves out the open question's point until reveal", () => {
+  const session = new Session(multiQuiz(2), { randomInt: alwaysZero });
+  const a = session.join("A").id;
+  const b = session.join("B").id;
+  session.advance(); // QUESTION 0
+  answerRight(session, a);
+  answerWrong(session, b);
+  // Right and wrong look the same while the question is open
+  assertEquals(session.getParticipant(a)!.score, 1);
+  assertEquals(session.playerScore(a), 0);
+  assertEquals(session.playerState(a).participant!.score, 0);
+  assertEquals(session.playerState(b).participant!.score, 0);
+  session.advance(); // CORRECT
+  assertEquals(session.playerState(a).participant!.score, 1);
+  assertEquals(session.playerState(b).participant!.score, 0);
+  session.back(); // locked QUESTION: already revealed
+  assertEquals(session.playerState(a).participant!.score, 1);
+  session.advance();
+  session.advance();
+  session.advance();
+  session.advance(); // QUESTION 1, not yet answered
+  assertEquals(session.phase, "QUESTION");
+  assertEquals(session.questionIndex, 1);
+  assertEquals(session.playerState(a).participant!.score, 1);
+  answerRight(session, a);
+  assertEquals(session.playerState(a).participant!.score, 1);
+});
