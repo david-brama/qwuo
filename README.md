@@ -40,6 +40,21 @@ LOBBY → QUESTION → CORRECT → EXPLAIN → LEADERBOARD → … → END
 
 ---
 
+## Before the course
+
+1. **Pick the question set** (details: [Pick the question set](#pick-the-question-set)):
+   - `QUIZ_FILTER='live=true'` — the questions marked live, or
+   - `QUIZ_IDS='Q1,Q7,Q12'` — exactly these questions, in this order.
+2. **Start with a named tunnel**, so the QR and the phones stay valid if the tunnel restarts (setup: [Stable hostname](#stable-hostname-named-tunnel-recommended-for-the-course)):
+   ```bash
+   QUIZ_FILTER='live=true' TUNNEL_TOKEN='<token>' PUBLIC_URL=https://quiz.example.com deno task start:tunnel
+   # or a locally managed tunnel: TUNNEL_NAME=qwuo … TUNNEL_MODE=native
+   ```
+3. **Check the layout** on this laptop: `deno task test:ui` (about 2 minutes). It must end with `OK`.
+4. **Learn the keys** (keyboard or clicker) on the projector: → · PageDown · Space · Enter = **Next**; ← · PageUp = **Back**. No key does Reset.
+
+---
+
 ## Quick start (training room)
 
 **Recommended:** one command starts a quick tunnel to the **player** port, sets `PUBLIC_URL`, and runs the app.
@@ -484,7 +499,7 @@ openspec/                    Specs and archived change proposals
 - on the phone: fewer than 20 of 20 slow (400 ms) presses register, the offline banner or answer error is missing or not visible without scrolling, correct/incorrect shows before the reveal, the result is lost on reload, or a skipped question does not show "You didn't answer" with the correct answer
 
 ```bash
-deno task test:ui                              # every question in quiz.json (~25 s)
+deno task test:ui                              # every question in quiz.json (~2 min)
 UI_CHECK_LONGEST=8 deno task test:ui           # 8 longest slides + 8 longest explanations + every 10th
 SHOTS_DIR=/tmp/qwuo-shots deno task test:ui    # also save PNGs per view and size (incl. phone 375×667)
 SHOTS_ALL=1 SHOTS_DIR=/tmp/qwuo-shots deno task test:ui   # screenshot every question
