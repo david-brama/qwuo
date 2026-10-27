@@ -22,8 +22,6 @@ export function projectorHtml(
   <div class="shell${logoHtml ? " has-logo" : ""}" id="shell">
     <!-- Fixed/absolute chrome — out of flex flow -->
     <div class="chrome" aria-hidden="false">
-      ${logoHtml}
-      <div id="qr-small" class="qr-small" hidden title="Show join QR" role="button" tabindex="0">${qrSvgMarkup}</div>
       <div id="qr-modal" class="qr-modal" hidden>
         <div class="qr-modal-backdrop" data-close></div>
         <div class="qr-modal-panel" role="dialog" aria-label="Join QR code">
@@ -53,18 +51,23 @@ export function projectorHtml(
 
     <!-- Viewport flex column: header | main | footer -->
     <header class="header" id="header">
-      <div>
+      <div class="header-left">
         <div class="phase-label" id="phase-label">LOBBY</div>
         <h1 id="quiz-title">Loading…</h1>
       </div>
-      <div class="countdown" id="countdown" hidden aria-live="polite" aria-atomic="true"></div>
+      <div class="header-right">
+        <div class="answered" id="answered" hidden></div>
+        <div class="countdown" id="countdown" hidden aria-live="polite" aria-atomic="true"></div>
+        ${logoHtml}
+        <div id="qr-small" class="qr-small" hidden title="Show join QR" role="button" tabindex="0">${qrSvgMarkup}</div>
+      </div>
     </header>
     <main class="main" id="main"></main>
     <footer class="footer" id="footer">
       <div class="status-line" id="status"></div>
       <div class="footer-right">
         <label class="font-slider" title="Question text size">
-          Text size
+          <span class="font-slider-label">Text size</span>
           <input type="range" id="font-scale" min="0.7" max="1.6" step="0.05" value="1" />
         </label>
         <button type="button" id="fs-btn" class="ghost-btn" title="Toggle fullscreen">Fullscreen</button>
@@ -109,6 +112,7 @@ export function projectorHtml(
     const filterError = document.getElementById("filter-error");
     const filterToggle = document.getElementById("filter-toggle");
     const countdownEl = document.getElementById("countdown");
+    const answeredEl = document.getElementById("answered");
 
     let state = null;
     let navBusy = false;
@@ -153,6 +157,43 @@ export function projectorHtml(
       main.style.setProperty("--q-scale", String(n));
       fontScale.value = String(n);
       try { localStorage.setItem("projector-q-scale", String(n)); } catch (_) {}
+      fitMain();
+    }
+
+    /**
+     * Shrink the slide (fonts, QR) via --fit until #main no longer
+     * overflows. Sizes in CSS are the maximum; nothing ever scrolls.
+     */
+    function fitMain() {
+      // scrollHeight rounds to whole px; also compare exact child boxes
+      const over = () => {
+        if (
+          main.scrollHeight > main.clientHeight ||
+          main.scrollWidth > main.clientWidth
+        ) return true;
+        const box = main.getBoundingClientRect();
+        for (const el of main.children) {
+          const r = el.getBoundingClientRect();
+          if (r.top < box.top - 0.25 || r.bottom > box.bottom - 1) return true;
+        }
+        return false;
+      };
+      main.style.setProperty("--fit", "1");
+      if (!over()) return;
+      let lo = 0.3;
+      let hi = 1;
+      for (let i = 0; i < 9; i++) {
+        const mid = (lo + hi) / 2;
+        main.style.setProperty("--fit", String(mid));
+        if (over()) hi = mid;
+        else lo = mid;
+      }
+      main.style.setProperty("--fit", String(lo));
+    }
+
+    window.addEventListener("resize", fitMain);
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(fitMain);
     }
 
     try {
@@ -221,7 +262,7 @@ export function projectorHtml(
     function renderChoices(choices, highlightIndex) {
       return choices.map((c, i) => {
         const cls = highlightIndex === i ? "choice highlight" : "choice";
-        return \`<div class="\${cls}"><span class="choice-letter">\${LETTERS[i] || i + 1}</span>\${esc(c)}</div>\`;
+        return \`<div class="\${cls}"><span class="choice-letter">\${LETTERS[i] || i + 1}</span><span class="choice-text">\${esc(c)}</span></div>\`;
       }).join("");
     }
 
@@ -233,18 +274,15 @@ export function projectorHtml(
     }
 
     /**
-     * Fixed left rail — outside the question column so it never gets clipped
-     * by overflow or squeezed by long question text.
+     * Slide metadata as one header line (values only; keys in the tooltip)
+     * so it costs no slide height.
      */
-    function renderSlideMetadata(entries) {
-      if (!entries || !entries.length) return "";
-      const cards = entries.map((e) =>
-        \`<div class="slide-meta-card">
-          <div class="slide-meta-key">\${esc(formatMetaLabel(e.key))}</div>
-          <div class="slide-meta-value">\${esc(e.value)}</div>
-        </div>\`
-      ).join("");
-      return \`<aside class="slide-meta-rail" aria-label="Question metadata">\${cards}</aside>\`;
+    function slideMetadataLine(entries) {
+      if (!entries || !entries.length) return null;
+      return {
+        text: entries.map((e) => e.value).join("  ·  "),
+        title: entries.map((e) => formatMetaLabel(e.key) + ": " + e.value).join("\\n"),
+      };
     }
 
     function filtersSignature(filters) {
@@ -531,8 +569,6 @@ export function projectorHtml(
 
     function render() {
       if (!state) return;
-      quizTitle.textContent = state.title;
-      phaseLabel.textContent = state.phase;
       updateNavButtons();
       syncCountdownTick();
 
@@ -542,21 +578,31 @@ export function projectorHtml(
 
       const q = state.question;
       const total = playableCount();
-      const metaHtml = (state.phase === "QUESTION" || state.phase === "CORRECT" ||
-        state.phase === "EXPLAIN" || state.phase === "LEADERBOARD")
-        ? renderSlideMetadata(q && q.slideMetadata)
-        : "";
-      const hasMeta = !!metaHtml;
+      const qNo = state.questionIndex + 1;
+      const inSlide = state.phase === "QUESTION" || state.phase === "CORRECT" ||
+        state.phase === "EXPLAIN" || state.phase === "LEADERBOARD";
+      const meta = inSlide ? slideMetadataLine(q && q.slideMetadata) : null;
+
+      const phaseText = {
+        LOBBY: "Lobby · scan to join",
+        QUESTION: \`Question \${qNo} of \${total}\${state.answersLocked ? " · Answers closed" : ""}\`,
+        CORRECT: \`Answer · Question \${qNo} of \${total}\`,
+        EXPLAIN: \`Explanation · Question \${qNo} of \${total}\`,
+        LEADERBOARD: \`Leaderboard · after question \${qNo} of \${total}\`,
+        END: "Session complete",
+      }[state.phase] || state.phase;
+      phaseLabel.textContent = phaseText;
+      quizTitle.textContent = meta ? meta.text : state.title;
+      quizTitle.title = meta ? meta.title : "";
+      quizTitle.classList.toggle("is-meta", !!meta);
+      document.title = state.title + " — Projector";
+
       const isLb = state.phase === "LEADERBOARD" || state.phase === "END";
       const mainClasses = ["main"];
-      if (isLobby) mainClasses.push("lobby-main", "has-filter-panel");
-      else if (isLb) {
-        mainClasses.push("lb-main");
-        if (hasMeta) mainClasses.push("has-meta-rail");
-      } else if (hasMeta) {
-        mainClasses.push("has-meta-rail");
-      }
+      if (isLobby) mainClasses.push("lobby-main");
+      else if (isLb) mainClasses.push("lb-main");
       main.className = mainClasses.join(" ");
+      shell.classList.toggle("is-lobby", isLobby);
 
       const activeN = typeof state.activeUserCount === "number"
         ? state.activeUserCount
@@ -570,88 +616,79 @@ export function projectorHtml(
           activePart
         : state.phase === "LOBBY"
         ? \`\${state.participantCount} joined\${activePart} · \${total} question\${total === 1 ? "" : "s"}\`
-        : \`\${state.participantCount} joined\${activePart} · Q\${state.questionIndex + 1}/\${total}\`;
+        : \`\${state.participantCount} joined\${activePart} · Q\${qNo}/\${total}\`;
       statusEl.textContent = countPart;
 
-      const activeAnsweredLine =
-        state.phase === "QUESTION" || state.phase === "CORRECT" ||
-          state.phase === "EXPLAIN"
-          ? \`<div class="active-answered"><span class="score">\${activeAnsweredN}</span> / <span class="score">\${activeN}</span> active answered</div>\`
-          : "";
+      const showAnswered = state.phase === "QUESTION" || state.phase === "CORRECT" ||
+        state.phase === "EXPLAIN";
+      answeredEl.hidden = !showAnswered;
+      answeredEl.innerHTML = showAnswered
+        ? \`<span class="score">\${activeAnsweredN}</span> / <span class="score">\${activeN}</span> active answered\`
+        : "";
 
       renderFilterPanel(false);
+      main.innerHTML = slideHtml(q, total, activeN);
+      fitMain();
+    }
 
+    function leaderboardRows(entries) {
+      return entries.slice(0, 10).map((e) => \`
+        <div class="lb-row \${e.rank <= 3 ? "top3" : ""}">
+          <div class="lb-rank">#\${e.rank}</div>
+          <div class="lb-name">\${esc(e.name)}</div>
+          <div class="lb-score">\${formatScore(e.score)}</div>
+        </div>
+      \`).join("");
+    }
+
+    function slideHtml(q, total, activeN) {
       if (state.phase === "LOBBY") {
-        main.innerHTML = \`
-          <div class="lobby-title">\${esc(state.title)}</div>
-          <div class="lobby-sub">Scan to join on your phone</div>
+        const n = state.participantCount;
+        return \`
           <div class="qr-large">\${QR_SVG}</div>
           <div class="join-url">\${esc(JOIN_URL)}</div>
-          <div class="participant-count"><span class="score">\${state.participantCount}</span> participant\${state.participantCount === 1 ? "" : "s"} waiting · <span class="score">\${activeN}</span> active · <span class="score">\${total}</span> question\${total === 1 ? "" : "s"}</div>
+          <div class="participant-count"><span class="score">\${n}</span> participant\${n === 1 ? "" : "s"} waiting · <span class="score">\${activeN}</span> active · <span class="score">\${total}</span> question\${total === 1 ? "" : "s"}</div>
         \`;
-        return;
       }
 
       if (state.phase === "QUESTION" || state.phase === "CORRECT") {
         const hi = state.phase === "CORRECT" ? q.correct : -1;
-        main.innerHTML = \`
-          \${metaHtml}
+        return \`
           <div class="slide-content">
-            <div class="q-progress">Question \${state.questionIndex + 1} of \${total}\${state.answersLocked ? " · Answers closed" : ""}</div>
-            \${activeAnsweredLine}
             <div class="q-text">\${md(q.text)}</div>
             <div class="choices">\${renderChoices(q.choices, hi)}</div>
           </div>
         \`;
-        return;
       }
 
       if (state.phase === "EXPLAIN") {
-        main.innerHTML = \`
-          \${metaHtml}
+        return \`
           <div class="slide-content">
-            <div class="q-progress">Explanation · Q\${state.questionIndex + 1} of \${total}</div>
-            \${activeAnsweredLine}
             <div class="explain-box">\${md(q.explain || "No explanation")}</div>
           </div>
         \`;
-        return;
       }
 
       if (state.phase === "LEADERBOARD") {
-        const rows = state.leaderboard.map((e) => \`
-          <div class="lb-row \${e.rank <= 3 ? "top3" : ""}">
-            <div class="lb-rank">#\${e.rank}</div>
-            <div class="lb-name">\${esc(e.name)}</div>
-            <div class="lb-score">\${formatScore(e.score)}</div>
-          </div>
-        \`).join("") || \`<p class="muted">No participants yet</p>\`;
-        main.innerHTML = \`
-          \${metaHtml}
+        const rows = leaderboardRows(state.leaderboard) ||
+          \`<p class="muted">No participants yet</p>\`;
+        return \`
           <div class="slide-content lb-slide">
-            <div class="q-progress">Leaderboard · after Q\${state.questionIndex + 1} of \${total}</div>
             <div class="leaderboard">\${rows}</div>
           </div>
         \`;
-        return;
       }
 
       if (state.phase === "END") {
-        const rows = state.leaderboard.slice(0, 10).map((e) => \`
-          <div class="lb-row \${e.rank <= 3 ? "top3" : ""}">
-            <div class="lb-rank">#\${e.rank}</div>
-            <div class="lb-name">\${esc(e.name)}</div>
-            <div class="lb-score">\${formatScore(e.score)}</div>
-          </div>
-        \`).join("");
-        main.innerHTML = \`
+        return \`
           <div class="slide-content lb-slide">
             <div class="end-title">Session complete</div>
             <p class="muted lb-end-sub">Final standings · out of \${total}</p>
-            <div class="leaderboard">\${rows}</div>
+            <div class="leaderboard">\${leaderboardRows(state.leaderboard)}</div>
           </div>
         \`;
       }
+      return "";
     }
 
     async function fetchState() {
