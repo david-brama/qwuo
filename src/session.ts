@@ -440,6 +440,10 @@ export class Session {
     this.runtimeFilters = normalized;
     this.playQuestions = this.shuffleBankSubset(matched);
     this.questionIndex = 0;
+    // Indices now point at a different question set: the reveal watermark
+    // and per-index answers no longer apply. Scores already earned stay.
+    this.revealedThrough = -1;
+    for (const p of this.participants.values()) p.answers.clear();
   }
 
   private buildShuffledPlayQuestions(

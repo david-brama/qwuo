@@ -545,6 +545,34 @@ Deno.test("answers are rejected after Back from CORRECT (no late scoring)", () =
   assertEquals(session.answersLocked, true);
 });
 
+Deno.test("changing the question set in LOBBY clears the reveal watermark", () => {
+  const session = new Session(filterBankQuiz, { randomInt: alwaysZero });
+  const p = session.join("P");
+  session.advance(); // QUESTION 0
+  session.answer(p.id, session.projectorState().question!.correct);
+  session.advance(); // CORRECT — revealed
+  session.back(); // QUESTION (locked)
+  session.back(); // LOBBY
+  assertEquals(session.getRevealedThrough(), 0);
+
+  session.applyRuntimeFilters([{ key: "live", value: "true" }]);
+  assertEquals(session.getRevealedThrough(), -1);
+  session.advance(); // new QUESTION 0
+  assertEquals(session.answersLocked, false);
+  assertEquals(session.hasAnswered(p.id), false);
+  session.answer(p.id, session.projectorState().question!.correct);
+  assertEquals(session.getParticipant(p.id)?.score, 2);
+
+  // Clearing the filter is also a set change
+  session.advance(); // CORRECT
+  session.back();
+  session.back(); // LOBBY
+  session.applyRuntimeFilters([]);
+  assertEquals(session.getRevealedThrough(), -1);
+  session.advance();
+  assertEquals(session.answersLocked, false);
+});
+
 Deno.test("countdown expiry also locks the question for Back", async () => {
   const quiz: Quiz = {
     title: "T",
