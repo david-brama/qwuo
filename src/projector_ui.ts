@@ -610,30 +610,33 @@ export function projectorHtml(
       main.className = mainClasses.join(" ");
       shell.classList.toggle("is-lobby", isLobby);
 
-      const activeN = typeof state.activeUserCount === "number"
-        ? state.activeUserCount
-        : 0;
-      const activeAnsweredN = typeof state.activeAnsweredCount === "number"
-        ? state.activeAnsweredCount
-        : 0;
-      const activePart = \` · \${activeN} active\`;
+      const num = (v) => typeof v === "number" ? v : 0;
+      // Engagement (≥2 answers in the last 4 questions) — host-only footer
+      const activeN = num(state.activeUserCount);
+      const onlineN = num(state.onlineCount);
+      const answeredN = num(state.answeredCount);
+      const activePart = isLobby ? "" : \` · \${activeN} active\`;
       const countPart = state.phase === "END"
         ? "Session complete · " + total + " question" + (total === 1 ? "" : "s") +
           activePart
         : state.phase === "LOBBY"
-        ? \`\${state.participantCount} joined\${activePart} · \${total} question\${total === 1 ? "" : "s"}\`
-        : \`\${state.participantCount} joined\${activePart} · Q\${qNo}/\${total}\`;
+        ? \`\${state.participantCount} joined · \${onlineN} online · \${total} question\${total === 1 ? "" : "s"}\`
+        : \`\${state.participantCount} joined · \${onlineN} online\${activePart} · Q\${qNo}/\${total}\`;
       statusEl.textContent = countPart;
 
+      // X of N: answers to this question of those who can answer it
       const showAnswered = state.phase === "QUESTION" || state.phase === "CORRECT" ||
         state.phase === "EXPLAIN";
       answeredEl.hidden = !showAnswered;
       answeredEl.innerHTML = showAnswered
-        ? \`<span class="score">\${activeAnsweredN}</span> / <span class="score">\${activeN}</span> active answered\`
+        ? \`<span class="answered-num"><span class="score">\${answeredN}</span> of <span class="score">\${onlineN}</span></span><span class="answered-label">answered</span>\`
+        : "";
+      answeredEl.title = showAnswered
+        ? "Answers to this question, of participants online now (polled in the last 15 s) or already answered"
         : "";
 
       renderFilterPanel(false);
-      main.innerHTML = slideHtml(q, total, activeN);
+      main.innerHTML = slideHtml(q, total, onlineN);
       fitMain();
     }
 
@@ -665,13 +668,13 @@ export function projectorHtml(
       \`;
     }
 
-    function slideHtml(q, total, activeN) {
+    function slideHtml(q, total, onlineN) {
       if (state.phase === "LOBBY") {
         const n = state.participantCount;
         return \`
           <div class="qr-large">\${QR_SVG}</div>
           <div class="join-url">\${esc(JOIN_URL)}</div>
-          <div class="participant-count"><span class="score">\${n}</span> participant\${n === 1 ? "" : "s"} waiting · <span class="score">\${activeN}</span> active · <span class="score">\${total}</span> question\${total === 1 ? "" : "s"}</div>
+          <div class="participant-count"><span class="score">\${n}</span> joined · <span class="score">\${onlineN}</span> online · <span class="score">\${total}</span> question\${total === 1 ? "" : "s"}</div>
         \`;
       }
 

@@ -8,6 +8,7 @@ import {
   engagementWindowIndices,
   isActiveParticipant,
   legacyRevealedThrough,
+  ONLINE_WINDOW_MS,
   Session,
   SessionError,
 } from "./session.ts";
@@ -864,4 +865,59 @@ Deno.test("questionsAsked counts revealed questions, not the bank", () => {
   assertEquals(session.projectorState().questionsAsked, 2);
   session.reset();
   assertEquals(session.projectorState().questionsAsked, 0);
+});
+
+// --- "X of N answered" ---
+
+Deno.test("answer progress: meaningful from Q1; N = online or answered", () => {
+  let t = 1_000_000;
+  const session = new Session(multiQuiz(3), {
+    randomInt: alwaysZero,
+    now: () => t,
+  });
+  const a = session.join("Ann").id;
+  const b = session.join("Ben").id;
+  const c = session.join("Cy").id;
+  // LOBBY: nobody can answer yet
+  assertEquals(session.projectorState().answeredCount, 0);
+  assertEquals(session.projectorState().onlineCount, 3);
+
+  session.advance(); // Q1
+  answerRight(session, a);
+  answerWrong(session, b);
+  let st = session.projectorState();
+  assertEquals([st.answeredCount, st.onlineCount], [2, 3]);
+  // The old engagement metric is still 0 here; the new counter is not
+  assertEquals(st.activeAnsweredCount, 0);
+
+  // Cy's phone stops polling: drops out of N
+  t += ONLINE_WINDOW_MS + 1;
+  session.markSeen(a);
+  st = session.projectorState();
+  assertEquals([st.answeredCount, st.onlineCount], [2, 2]);
+  // Ben answered but went quiet: still counted (X ≤ N)
+  assertEquals(st.answeredCount <= st.onlineCount, true);
+
+  // Cy comes back
+  session.markSeen(c);
+  assertEquals(session.projectorState().onlineCount, 3);
+
+  // Next question: answered resets
+  advanceToLeaderboard(session);
+  session.advance(); // Q2
+  st = session.projectorState();
+  assertEquals(st.answeredCount, 0);
+});
+
+Deno.test("answer progress: unknown ids are ignored; END reports 0 answered", () => {
+  const session = new Session(multiQuiz(1), { randomInt: alwaysZero });
+  session.markSeen("not-a-participant");
+  assertEquals(session.projectorState().onlineCount, 0);
+  const a = session.join("Ann").id;
+  session.advance();
+  answerRight(session, a);
+  advanceToLeaderboard(session);
+  assertEquals(session.projectorState().answeredCount, 1);
+  session.advance(); // END
+  assertEquals(session.projectorState().answeredCount, 0);
 });

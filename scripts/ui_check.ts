@@ -239,6 +239,8 @@ export interface Measure {
   lbRows: number;
   lbFont: number | null;
   podium: number;
+  /** "X of N" answered counter text, when shown. */
+  answered: string | null;
   qrBox: { x: number; y: number; width: number; height: number } | null;
 }
 
@@ -338,7 +340,7 @@ function measureInPage(): Measure {
   }
 
   // Chrome that must stay on screen and uncovered
-  for (const sel of ["#countdown", "#next-btn", "#back-btn", "#qr-small", ".brand-logo"]) {
+  for (const sel of ["#countdown", "#answered", "#next-btn", "#back-btn", "#qr-small", ".brand-logo"]) {
     const el = document.querySelector(sel);
     if (el && visible(el)) {
       checkBox(el, false);
@@ -378,6 +380,10 @@ function measureInPage(): Measure {
     lbRows: [...document.querySelectorAll("#main .lb-row")].filter(visible).length,
     lbFont: font("#main .leaderboard:not(.lb-rest) .lb-row"),
     podium: [...document.querySelectorAll("#main .podium-place")].filter(visible).length,
+    answered: (() => {
+      const el = document.querySelector("#answered .answered-num");
+      return el && visible(el) ? (el.textContent || "").trim() : null;
+    })(),
     qrBox,
   };
 }
@@ -495,6 +501,7 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
     await phone.waitForSelector("#view-wait.active");
     await shot(phone, `player-lobby-${phoneVp}`);
     const joined = players.length + 1;
+    let accepted = 0;
 
     const check = async (tag: string, label: string, shotName: string | null) => {
       for (const { vp, w, h, page } of pages) {
@@ -519,6 +526,19 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
           }
         }
         if (m.explainFont !== null) s.minExplainFont = Math.min(s.minExplainFont, m.explainFont);
+        if (tag === "question" || tag === "correct" || tag === "explain") {
+          // N moves with the 15 s online window, so only bound it
+          const m2 = m.answered?.match(/^(\d+) of (\d+)$/);
+          const wantX = tag === "question" ? 0 : accepted;
+          if (!m2) {
+            failures.push(`${vp} ${label}: no "X of N answered" counter (got ${JSON.stringify(m.answered)})`);
+          } else if (
+            Number(m2[1]) !== wantX || Number(m2[2]) < Math.max(1, wantX) ||
+            Number(m2[2]) > joined
+          ) {
+            failures.push(`${vp} ${label}: answered counter "${m.answered}", want ${wantX} of ${Math.max(1, wantX)}…${joined}`);
+          }
+        }
         if (tag === "leaderboard") {
           if (m.lbRows !== Math.min(10, joined)) {
             failures.push(`${vp} ${label}: ${m.lbRows} leaderboard rows, want ${Math.min(10, joined)}`);
@@ -574,9 +594,12 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
         await shot(phone, `player-${nm("question")}-${phoneVp}`);
       }
       // A few answers so the counters are non-zero
+      // (the per-player rate limit rejects some in a fast full run)
+      accepted = 0;
       for (const [i, p] of players.slice(0, 7).entries()) {
         const choiceIndex = (qi + Math.floor(i / 2)) % 4;
-        await post(`${app.player}/api/answer`, { id: p.id, choiceIndex }).catch(() => {});
+        await post(`${app.player}/api/answer`, { id: p.id, choiceIndex })
+          .then(() => accepted++, () => {});
       }
       await goTo(app, "CORRECT", qi);
       await check("correct", `${tag} CORRECT`, nm("correct"));

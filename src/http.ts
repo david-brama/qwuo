@@ -443,6 +443,7 @@ export function createPlayerHandler(
       if (path === "/api/state") {
         if (req.method !== "GET") return methodNotAllowed();
         const id = url.searchParams.get("id");
+        if (id) session.markSeen(id);
         return json(session.playerState(id));
       }
 

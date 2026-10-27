@@ -216,7 +216,7 @@ Deno.test("session-scoped UI and state serve for active id", async () => {
   assertEquals(ui.status, 200);
   assertEquals(ui.headers.get("content-type")?.includes("text/html"), true);
   const html = await ui.text();
-  assertEquals(html.includes("active answered"), true);
+  assertEquals(html.includes("answeredCount"), true);
   assertEquals(html.includes("activeUserCount"), true);
 
   const st = await player(new Request(`http://0.0.0.0${BASE}/api/state`));
@@ -230,6 +230,24 @@ Deno.test("session-scoped UI and state serve for active id", async () => {
   assertEquals(pbody.activeUserCount, 0);
   assertEquals(pbody.activeAnsweredCount, 0);
   assertEquals("activeUserCount" in body, false);
+});
+
+Deno.test("player poll with id marks the participant online", async () => {
+  let t = 1_000_000;
+  const session = new Session(quiz, { now: () => t });
+  const projector = createProjectorHandler(session, config, SESSION_ID);
+  const player = createPlayerHandler(session, SESSION_ID);
+  const { id } = session.join("Pat");
+  const online = async () =>
+    (await (await projector(new Request(api("/api/state")))).json()).onlineCount;
+  assertEquals(await online(), 1);
+  t += 60_000;
+  assertEquals(await online(), 0);
+  const res = await player(
+    new Request(`http://0.0.0.0${BASE}/api/state?id=${id}`),
+  );
+  await res.body?.cancel();
+  assertEquals(await online(), 1);
 });
 
 Deno.test("UI omits logo when none provided", async () => {

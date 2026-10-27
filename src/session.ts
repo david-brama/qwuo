@@ -74,6 +74,12 @@ export type SessionHydrate = {
 export const MAX_NAME_LENGTH = 40;
 export const MAX_PARTICIPANTS = 500;
 
+/**
+ * A participant whose phone polled within this window counts as online.
+ * Phones poll every second, so 15 s rides out short Wi-Fi drops.
+ */
+export const ONLINE_WINDOW_MS = 15_000;
+
 /** Rolling window size for active-user engagement. */
 export const ENGAGEMENT_WINDOW_SIZE = 4;
 /** Minimum answers within the window to count as active. */
@@ -186,6 +192,8 @@ export type SessionOptions = {
   effectiveQuestions?: Question[];
   /** Initial runtime metadata filters (default none). */
   runtimeFilters?: MetadataFilter[];
+  /** Injectable clock for presence tests (default Date.now). */
+  now?: () => number;
 };
 
 export class Session {
@@ -202,6 +210,9 @@ export class Session {
   phase: Phase = "LOBBY";
   questionIndex = 0;
   private participants = new Map<string, Participant>();
+  /** participant id → last poll/join/answer time (epoch ms); not persisted. */
+  private lastSeenMs = new Map<string, number>();
+  private now: () => number = Date.now;
   private nextJoinOrder = 0;
   private readonly randomInt?: RandomInt;
 
@@ -223,6 +234,7 @@ export class Session {
   constructor(quiz: Quiz, options?: SessionOptions) {
     this.quiz = quiz;
     this.randomInt = options?.randomInt;
+    if (options?.now) this.now = options.now;
     this.runtimeFilters = cloneFilters(options?.runtimeFilters ?? []);
     if (options?.effectiveQuestions) {
       if (options.effectiveQuestions.length === 0) {
@@ -579,7 +591,15 @@ export class Session {
       answers: new Map(),
     };
     this.participants.set(id, participant);
+    this.markSeen(id);
     return { id, name: trimmed };
+  }
+
+  /** Record that a participant's phone is connected (poll, join, answer). */
+  markSeen(participantId: string): void {
+    if (this.participants.has(participantId)) {
+      this.lastSeenMs.set(participantId, this.now());
+    }
   }
 
   getParticipant(id: string): Participant | undefined {
@@ -616,6 +636,7 @@ export class Session {
     }
 
     p.answers.set(this.questionIndex, choiceIndex);
+    this.markSeen(participantId);
     const correct = choiceIndex === q.correct;
     if (correct) p.score += 1;
 
@@ -778,6 +799,27 @@ export class Session {
     return { activeUserCount, activeAnsweredCount };
   }
 
+  /**
+   * "X of N answered" for the current question. X = answers to it.
+   * N = participants who can answer it: online now (polled within
+   * ONLINE_WINDOW_MS) or already answered, so X ≤ N and closed or
+   * abandoned phones do not inflate N. Both 0 in LOBBY/END.
+   */
+  answerProgress(): { answeredCount: number; onlineCount: number } {
+    const cutoff = this.now() - ONLINE_WINDOW_MS;
+    const onSlide = this.phase !== "LOBBY" && this.phase !== "END";
+    let answeredCount = 0;
+    let onlineCount = 0;
+    for (const p of this.participants.values()) {
+      const answered = onSlide && p.answers.has(this.questionIndex);
+      if (answered) answeredCount++;
+      if (answered || (this.lastSeenMs.get(p.id) ?? -Infinity) >= cutoff) {
+        onlineCount++;
+      }
+    }
+    return { answeredCount, onlineCount };
+  }
+
   /** Host-facing full state */
   projectorState() {
     const q = this.phase === "LOBBY" || this.phase === "END"
@@ -786,6 +828,7 @@ export class Session {
 
     const slideKeys = this.quiz.config?.slideMetadataKeys;
     const { activeUserCount, activeAnsweredCount } = this.engagementMetrics();
+    const { answeredCount, onlineCount } = this.answerProgress();
 
     return {
       role: "projector" as const,
@@ -796,6 +839,8 @@ export class Session {
       bankQuestionCount: this.bankQuestionCount,
       questionsAsked: this.questionsAsked(),
       participantCount: this.participantCount(),
+      answeredCount,
+      onlineCount,
       activeUserCount,
       activeAnsweredCount,
       canGoBack: this.canGoBack(),

@@ -183,13 +183,23 @@ body {
   gap: clamp(8px, 1.2vw, 22px);
 }
 
+/* "X of N answered": big count, small label under it */
 .answered {
-  font-size: clamp(14px, 2.1vh, 24px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.05;
   color: var(--muted);
   font-weight: 600;
   white-space: nowrap;
 }
-.answered .score { color: var(--text); }
+.answered-num { font-size: clamp(20px, 4vh, 44px); }
+.answered-num .score { color: var(--text); font-weight: 800; }
+.answered-label {
+  font-size: clamp(11px, 1.6vh, 18px);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
 .answered[hidden] { display: none; }
 
 /* QUESTION countdown (server deadline; whole seconds) */
