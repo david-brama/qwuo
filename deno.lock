@@ -3,8 +3,11 @@
   "specifiers": {
     "jsr:@libs/qrcode@3": "3.1.0",
     "npm:dompurify@3": "3.4.12",
+    "npm:jsqr@1.4.0": "1.4.0",
     "npm:marked@*": "15.0.12",
-    "npm:marked@15": "15.0.12"
+    "npm:marked@15": "15.0.12",
+    "npm:playwright-core@1.56.1": "1.56.1",
+    "npm:pngjs@7.0.0": "7.0.0"
   },
   "jsr": {
     "@libs/qrcode@3.1.0": {
@@ -21,9 +24,19 @@
         "@types/trusted-types"
       ]
     },
+    "jsqr@1.4.0": {
+      "integrity": "sha512-dxLob7q65Xg2DvstYkRpkYtmKm2sPJ9oFhrhmudT1dZvNFFTlroai3AWSpLey/w5vMcLBXRgOJsbXpdN9HzU/A=="
+    },
     "marked@15.0.12": {
       "integrity": "sha512-8dD6FusOQSrpv9Z1rdNMdlSgQOIP880DHqnohobOmYLElGEqAL/JvxvuxZO16r4HtjTlfPRDC1hbvxC9dPN2nA==",
       "bin": true
+    },
+    "playwright-core@1.56.1": {
+      "integrity": "sha512-hutraynyn31F+Bifme+Ps9Vq59hKuUCz7H1kDOcBs+2oGguKkWTU50bBWrtz34OUWmIwpBTWDxaRPXrIXkgvmQ==",
+      "bin": true
+    },
+    "pngjs@7.0.0": {
+      "integrity": "sha512-LKWqWJRhstyYo9pGvgor/ivk2w94eSjE3RGVuzLGlr3NmD8bf7RcYGze1mNdEHRP6TRP6rMuDHk5t44hnTRyow=="
     }
   },
   "remote": {
@@ -64,7 +77,10 @@
   "workspace": {
     "dependencies": [
       "npm:dompurify@3",
-      "npm:marked@15"
+      "npm:jsqr@1.4.0",
+      "npm:marked@15",
+      "npm:playwright-core@1.56.1",
+      "npm:pngjs@7.0.0"
     ]
   }
 }

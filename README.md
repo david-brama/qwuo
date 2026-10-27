@@ -157,7 +157,7 @@ PUBLIC_URL=https://YOUR-SUBDOMAIN.trycloudflare.com deno task start
 1. **Start** with `deno task start:tunnel` (or local + manual tunnel).
 2. **Open projector** at the printed `/s/<uuid>/` URL.
 3. Optional: **Filter** panel (LOBBY only) to narrow questions for this room.
-4. Optional: **Fullscreen** control; **text size** slider for long stems.
+4. Optional: **Fullscreen** control; **text size** slider. Slides size themselves to the screen: text starts large and shrinks only as much as needed, so a slide never scrolls (checked at 1024×768 … 1920×1080, see [Projector layout check](#projector-layout-check)).
 5. Learners scan QR → enter a display name (max 40 characters; up to 500 participants).
 6. **Next** leaves LOBBY into the first QUESTION.
 7. During QUESTION, phones answer once; they see correct/incorrect immediately. You still control the room pace with Next/Back (unless a countdown expires).
@@ -424,6 +424,7 @@ quiz.json                    Your bank (gitignored sample; create your own)
 docker-compose.yml           cloudflared (quick or named) tunnel → player port
 scripts/start-with-tunnel.sh deno task start:tunnel (health check + supervision)
 scripts/tunnel-lib.sh        Quick-tunnel URL parsing (tested by scripts/tunnel_test.ts)
+scripts/ui_check.ts          Projector layout check in headless Chrome (deno task test:ui)
 src/
   config.ts                  Env + CLI filters / ids
   quiz.ts                    Load, validate, filter helpers, countdown resolve
@@ -445,7 +446,27 @@ openspec/                    Specs and archived change proposals
 | `deno task start` | Run the app |
 | `deno task start:tunnel` | Tunnel + app |
 | `deno task dev` | Watch mode |
-| `deno task test` | Unit tests under `src/` and tunnel script tests under `scripts/` |
+| `deno task test` | Unit tests under `src/`, tunnel script tests and a short projector layout check under `scripts/` |
+| `deno task test:ui` | Full projector layout check (every question, see below) |
+
+### Projector layout check
+
+`scripts/ui_check.ts` starts the app on free ports with a temp session dir, joins 12 players plus a phone, and walks LOBBY → QUESTION → CORRECT → EXPLAIN → LEADERBOARD → END in headless Chrome at **1920×1080, 1280×720, 1280×800 and 1024×768**. It fails when:
+
+- the document or `#main` scrolls (`scrollHeight > clientHeight`)
+- a choice, the question, the explanation, a leaderboard row or the join URL is outside the viewport, clipped by a parent, cut inside its box, or covered by another element
+- the lobby QR is outside the viewport, covered, smaller than about `min(65vh, 45vw)`, or does not decode (jsQR) to the join URL
+- the footer wraps, or question/choice text is below the floor (1080p: 40 px / 30 px; other sizes: 24 px / 20 px)
+
+```bash
+deno task test:ui                              # every question in quiz.json (~25 s)
+UI_CHECK_LONGEST=8 deno task test:ui           # 8 longest slides + 8 longest explanations + every 10th
+SHOTS_DIR=/tmp/qwuo-shots deno task test:ui    # also save PNGs per view and size (incl. phone 375×667)
+SHOTS_ALL=1 SHOTS_DIR=/tmp/qwuo-shots deno task test:ui   # screenshot every question
+CHROME_PATH=/path/to/chrome deno task test:ui  # pick the browser
+```
+
+It looks for Chrome in `/Applications`, common Linux paths and `~/Library/Caches/ms-playwright` / `~/.cache/ms-playwright`. With no browser, `test:ui` prints "skipped" and exits 0, and the short check inside `deno task test` (6 longest + a sample) is ignored. `SKIP_UI_CHECK=1` skips it on purpose. `QUIZ_PATH` selects another quiz file.
 
 ---
 
