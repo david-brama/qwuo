@@ -13,6 +13,7 @@
       "env": [
         "QUIZ_PATH",
         "QUIZ_FILTER",
+        "QUIZ_IDS",
         "PUBLIC_URL",
         "SESSIONS_DIR",
         "SESSION_ID",

@@ -37,6 +37,7 @@ const config: Config = {
   sessionId: SESSION_ID,
   sessionFresh: false,
   filters: [],
+  ids: [],
   trustProxyHeader: null,
 };
 

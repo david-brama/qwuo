@@ -7,6 +7,7 @@ import {
 } from "./src/config.ts";
 import {
   filterQuestionsByMetadata,
+  selectQuestionsByIds,
   formatEmptyFilterDiagnostic,
   formatFiltersSummary,
   loadQuiz,
@@ -44,6 +45,20 @@ try {
   const msg = err instanceof Error ? err.message : String(err);
   console.error(`Quiz load failed: ${msg}`);
   Deno.exit(1);
+}
+
+if (config.ids.length > 0) {
+  const before = quiz.questions.length;
+  try {
+    quiz = { ...quiz, questions: selectQuestionsByIds(quiz.questions, config.ids) };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(msg);
+    Deno.exit(1);
+  }
+  console.log(
+    `Ids: ${before} → ${quiz.questions.length} questions in the given order (${config.ids.join(", ")})`,
+  );
 }
 
 if (config.filters.length > 0) {

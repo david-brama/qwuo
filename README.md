@@ -178,6 +178,7 @@ Need a brand-new empty room (no roster)? Use `SESSION_FRESH=1` at boot (see [Con
 | `PLAYER_PORT` | `3001` | Player HTTP port (`127.0.0.1`; this is what you tunnel) |
 | `QUIZ_PATH` | `quiz.json` | Quiz content file |
 | `QUIZ_FILTER` | _(unset)_ | Startup metadata filters: `;`-separated `key=value` (see [Filters](#filters)) |
+| `QUIZ_IDS` | _(unset)_ | Explicit question list by `metadata.id`, comma/space separated, **played in the given order** (see [Pick the question set](#pick-the-question-set)) |
 | `SESSIONS_DIR` | `.qwuo` | Snapshots `{uuid}.json` + active pointer `current` |
 | `SESSION_ID` | _(unset)_ | Pin a session UUID; otherwise restore pointer or mint new |
 | `SESSION_FRESH` | _(unset)_ | `1` / `true` / `yes` → wipe that session’s snapshot on boot and start empty LOBBY (new UUID unless `SESSION_ID` is set) |
@@ -187,10 +188,11 @@ Need a brand-new empty room (no roster)? Use `SESSION_FRESH=1` at boot (see [Con
 
 ```bash
 deno run -P main.ts -- --filter live=true
+deno run -P main.ts -- --ids Q1,Q7,Q12
 ./scripts/start-with-tunnel.sh -- --filter live=true
 ```
 
-Env filters are applied first, then CLI filters; together they follow the same AND/OR rules.
+Env filters are applied first, then CLI filters; together they follow the same AND/OR rules. `QUIZ_IDS` ids come first, then `--ids` ids.
 
 > **Permissions:** `deno.json` grants read access to `quiz.json`, `logo.png`, and `./.qwuo` by default. A custom `QUIZ_PATH` outside those paths needs a matching permission entry (or a broader `-A` for experiments).
 
@@ -291,11 +293,40 @@ When the deadline hits, the session advances **QUESTION → CORRECT** with the s
 
 ---
 
+## Pick the question set
+
+Two ways, which you can combine. Both work with `deno task start` and the tunnel script (env vars are passed through; CLI flags go after `--`).
+
+**Only the `live=true` questions** (file order):
+
+```bash
+deno run -P main.ts -- --filter live=true
+QUIZ_FILTER='live=true' deno task start
+./scripts/start-with-tunnel.sh -- --filter live=true
+QUIZ_FILTER='live=true' deno task start:tunnel
+```
+
+**An explicit list of question ids** (matched on `metadata.id`, exact and case-sensitive). The quiz plays them **in the order you list them**, not the file order:
+
+```bash
+deno run -P main.ts -- --ids Q1,Q7,Q12
+QUIZ_IDS='Q1,Q7,Q12' deno task start
+./scripts/start-with-tunnel.sh -- --ids Q1,Q7,Q12
+QUIZ_IDS='Q1 Q7 Q12' deno task start:tunnel        # spaces work too
+```
+
+- An unknown id, an id listed twice, or an id used by two questions stops the app with an error that names the ids.
+- `--ids` and `--filter` together = AND: the id list is taken first (in your order), then filters remove non-matching questions. Example: `--ids Q1,Q2,Q3 --filter live=true` plays only the live ones of Q1–Q3.
+- Alternative in **file order**: `--filter id=Q1 --filter id=Q7 --filter id=Q12` (OR within one key).
+- Changing the selection changes the quiz fingerprint, so the next start is a new LOBBY (old snapshot not restored). Add `SESSION_FRESH=1` on the course morning anyway.
+
+The startup log confirms the result, e.g. `Ids: 60 → 3 questions in the given order (Q1, Q7, Q12)` or `Filter: 60 → 30 questions (filters: live=true)`.
+
 ## Filters
 
 Two layers stack:
 
-1. **Startup filters** (`QUIZ_FILTER` / `--filter`) shrink the process bank for the whole process.  
+1. **Startup filters** (`QUIZ_IDS` / `--ids`, then `QUIZ_FILTER` / `--filter`) shrink the process bank for the whole process.  
 2. **Projector Filters panel** (LOBBY) can narrow further for this room only.
 
 Startup-dropped questions **cannot** be brought back by the panel.
@@ -394,7 +425,7 @@ docker-compose.yml           cloudflared (quick or named) tunnel → player port
 scripts/start-with-tunnel.sh deno task start:tunnel (health check + supervision)
 scripts/tunnel-lib.sh        Quick-tunnel URL parsing (tested by scripts/tunnel_test.ts)
 src/
-  config.ts                  Env + CLI filters
+  config.ts                  Env + CLI filters / ids
   quiz.ts                    Load, validate, filter helpers, countdown resolve
   session.ts                 Phases, join, answer, shuffle, countdown, filters
   persist.ts                 Snapshot fingerprint / save / restore

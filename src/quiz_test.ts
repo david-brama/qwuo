@@ -14,8 +14,10 @@ import {
   formatEmptyFilterDiagnostic,
   loadQuiz,
   parseFilterEntry,
+  parseIdList,
   remapChoiceLetters,
   resolveSlideMetadata,
+  selectQuestionsByIds,
   shuffleQuestionChoices,
   suggestMetadataKeys,
   validateQuiz,
@@ -915,4 +917,73 @@ Deno.test("buildMetadataFilterFacets: strings, bools, numbers, arrays; omit obje
 
   const n = facets.find((f) => f.key === "n")!;
   assertEquals(n.values, [{ value: "2", count: 2 }]);
+});
+
+function bankQ(id: unknown, live: boolean): Question {
+  return {
+    text: `Text ${String(id)}`,
+    choices: ["a", "b"],
+    correct: 0,
+    explain: "",
+    metadata: id === undefined ? { live } : { id, live },
+  };
+}
+
+const ID_BANK: Question[] = [
+  bankQ("Q1", true),
+  bankQ("Q2", false),
+  bankQ("Q7", true),
+  bankQ("Q12", false),
+  bankQ(undefined, true),
+  bankQ(30, true),
+];
+
+Deno.test("parseIdList: commas and/or whitespace, empties ignored", () => {
+  assertEquals(parseIdList("q1,q7,q12"), ["q1", "q7", "q12"]);
+  assertEquals(parseIdList(" Q1, Q7  Q12 ,,"), ["Q1", "Q7", "Q12"]);
+  assertEquals(parseIdList(""), []);
+});
+
+Deno.test("selectQuestionsByIds: keeps the given order, not file order", () => {
+  const picked = selectQuestionsByIds(ID_BANK, ["Q12", "Q1", "Q7"]);
+  assertEquals(picked.map((q) => q.metadata?.id), ["Q12", "Q1", "Q7"]);
+  // Numeric ids match their string form
+  assertEquals(selectQuestionsByIds(ID_BANK, ["30"])[0]!.metadata?.id, 30);
+});
+
+Deno.test("selectQuestionsByIds: unknown, duplicate, ambiguous ids throw", () => {
+  assertThrows(
+    () => selectQuestionsByIds(ID_BANK, ["Q1", "Q99", "q7"]),
+    Error,
+    "not found in metadata.id: Q99, q7",
+  );
+  assertThrows(
+    () => selectQuestionsByIds(ID_BANK, ["Q1", "Q1"]),
+    Error,
+    "listed more than once: Q1",
+  );
+  assertThrows(
+    () => selectQuestionsByIds([...ID_BANK, bankQ("Q1", false)], ["Q1"]),
+    Error,
+    "used by more than one question: Q1",
+  );
+});
+
+Deno.test("live=true filter selects only live questions (file order)", () => {
+  const live = filterQuestionsByMetadata(ID_BANK, [{ key: "live", value: "true" }]);
+  assertEquals(live.map((q) => q.metadata?.id), ["Q1", "Q7", undefined, 30]);
+});
+
+Deno.test("ids then live filter: AND, given order kept", () => {
+  const picked = selectQuestionsByIds(ID_BANK, ["Q7", "Q2", "Q1"]);
+  const live = filterQuestionsByMetadata(picked, [{ key: "live", value: "true" }]);
+  assertEquals(live.map((q) => q.metadata?.id), ["Q7", "Q1"]);
+});
+
+Deno.test("filter id=... (OR within key) keeps file order", () => {
+  const picked = filterQuestionsByMetadata(ID_BANK, [
+    { key: "id", value: "Q12" },
+    { key: "id", value: "Q1" },
+  ]);
+  assertEquals(picked.map((q) => q.metadata?.id), ["Q1", "Q12"]);
 });

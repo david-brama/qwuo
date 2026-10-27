@@ -456,6 +456,67 @@ export function filterQuestionsByMetadata(
   });
 }
 
+/**
+ * Parse an id list (`QUIZ_IDS` / `--ids`): comma- and/or whitespace-separated.
+ * Empty entries are ignored.
+ */
+export function parseIdList(raw: string): string[] {
+  return raw.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+}
+
+/** `metadata.id` as a string (string or finite number), else null. */
+function questionId(q: Question): string | null {
+  const id = q.metadata?.id;
+  if (typeof id === "string") return id.trim() || null;
+  if (typeof id === "number" && Number.isFinite(id)) return String(id);
+  return null;
+}
+
+/**
+ * Select questions by `metadata.id`, in the **given** order (not file order).
+ * Ids are exact and case-sensitive. Throws on duplicate requested ids, ids not
+ * in the bank, or ids that more than one bank question uses.
+ */
+export function selectQuestionsByIds(
+  questions: Question[],
+  ids: string[],
+): Question[] {
+  const byId = new Map<string, Question[]>();
+  for (const q of questions) {
+    const id = questionId(q);
+    if (id === null) continue;
+    const list = byId.get(id);
+    if (list) list.push(q);
+    else byId.set(id, [q]);
+  }
+  const seen = new Set<string>();
+  const dupes: string[] = [];
+  const missing: string[] = [];
+  const ambiguous: string[] = [];
+  const out: Question[] = [];
+  for (const id of ids) {
+    if (seen.has(id)) {
+      dupes.push(id);
+      continue;
+    }
+    seen.add(id);
+    const matches = byId.get(id);
+    if (!matches) missing.push(id);
+    else if (matches.length > 1) ambiguous.push(id);
+    else out.push(matches[0]!);
+  }
+  const errors: string[] = [];
+  if (dupes.length) errors.push(`listed more than once: ${dupes.join(", ")}`);
+  if (missing.length) errors.push(`not found in metadata.id: ${missing.join(", ")}`);
+  if (ambiguous.length) {
+    errors.push(`used by more than one question: ${ambiguous.join(", ")}`);
+  }
+  if (errors.length) {
+    throw new Error(`Question ids (QUIZ_IDS / --ids) ${errors.join("; ")}`);
+  }
+  return out;
+}
+
 /** Human-readable filter list for logs/errors. */
 export function formatFiltersSummary(filters: MetadataFilter[]): string {
   return filters.map((f) => `${f.key}=${f.value}`).join("; ");
