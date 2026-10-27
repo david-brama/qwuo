@@ -28,7 +28,7 @@ LOBBY → QUESTION → CORRECT → EXPLAIN → LEADERBOARD → … → END
 - Optional per-question **countdown** can auto-leave `QUESTION` when time is up  
 - Choices are **shuffled** for the room (same order on projector and phones)  
 - **+1** per correct answer; late joiners start at 0  
-- Duplicate display names are allowed  
+- Duplicate display names get a suffix: a second "Dana" (case and spaces ignored) joins as "Dana (2)", on the phone and the leaderboard  
 - Room state is saved under `.qwuo/` so a Deno restart can resume  
 
 ---
@@ -160,7 +160,7 @@ PUBLIC_URL=https://YOUR-SUBDOMAIN.trycloudflare.com deno task start
 4. Optional: **Fullscreen** control; **text size** slider. Slides size themselves to the screen: text starts large and shrinks only as much as needed, so a slide never scrolls (checked at 1024×768 … 1920×1080, see [Projector layout check](#projector-layout-check)).
 5. Learners scan QR → enter a display name (max 40 characters; up to 500 participants).
 6. **Next** leaves LOBBY into the first QUESTION.
-7. During QUESTION, phones answer once; they see correct/incorrect immediately. You still control the room pace with Next/Back (unless a countdown expires).
+7. During QUESTION, phones answer once and see only **Answer locked in** with the choice they picked; correct/incorrect and the correct answer appear on the phone when the answer is revealed (CORRECT), so nobody can tell neighbours early. The result comes from the server, so it survives a page reload. You still control the room pace with Next/Back (unless a countdown expires).
    The header shows **X of N answered**: X = answers to this question, N = participants who can answer it (phone polled in the last 15 s, or already answered), so closed or abandoned phones do not inflate N. The footer keeps `joined`, `online` and `active` (≥ 2 answers in the last 4 questions).
 8. Flow: show correct → explanation → leaderboard → next question… → END. The explanation slide repeats the question and the choices (condensed), with the correct choice marked by ✓, bold text and a thick outline. The leaderboard shows the top 10 with scores out of the questions asked so far; tied scores share a rank (1, 1, 3). END shows the final standings on a podium.
 9. **Back** steps one phase backward (does not wipe scores). Back from CORRECT shows the question again **read-only** ("Answers closed"): no timer, answers are rejected, Next reveals it again. Re-entering a question whose answer was **not** shown yet starts a full timer.
@@ -176,6 +176,8 @@ PUBLIC_URL=https://YOUR-SUBDOMAIN.trycloudflare.com deno task start
 The host controls (text size, Fullscreen, Reset, Back, Next) and the mouse pointer hide after 3 s without mouse movement and come back when you move the mouse or press a key other than Next/Back (so clicker presses do not flash them at the room). **Reset** asks for confirmation in an in-page dialog; Cancel has focus, so Enter or Escape cancel.
 
 If the projector cannot reach the server for two polls in a row (about 3 s; a request that hangs for 4 s counts as failed), an amber **Connection lost · reconnecting…** banner appears at the top with the time since the drop. It clears on the next good response.
+
+Phones show the same kind of banner at the top of the screen after two failed polls (about 2 s), or at once when a tapped answer cannot be sent ("Your answer was not sent… tap again"). Answer errors also show at the top, so they are visible while the choices are scrolled into view.
 
 Keys are ignored while you type in a field or the filter panel, while a dialog is open, and while a key is held. Two presses within 0.4 s count as one, so a clicker double-send does not skip a slide. No key triggers Reset.
 
@@ -478,6 +480,8 @@ openspec/                    Specs and archived change proposals
 - the reconnecting banner does not appear when `/api/state` fails twice in a row, appears after one failure, or does not clear on recovery
 - a presenter key does the wrong thing (→/PageDown/Space/Enter, ←/PageUp, double press, held key, keys on the slider or with the QR modal open, Reset-like keys)
 - the leaderboard does not show the top 10 (or text is below 40 px at 1080p / 22 px elsewhere), or END has no podium
+- on the **375×667 phone**: a question at or under the bank's median length does not show all its choices without scrolling (longer ones: fewer than two), question/choice text is below 15 px / 14 px, the countdown is off screen, or the page scrolls sideways
+- on the phone: fewer than 20 of 20 slow (400 ms) presses register, the offline banner or answer error is missing or not visible without scrolling, correct/incorrect shows before the reveal, or the result is lost on reload
 
 ```bash
 deno task test:ui                              # every question in quiz.json (~25 s)
