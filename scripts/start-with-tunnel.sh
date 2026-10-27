@@ -1,30 +1,50 @@
 #!/usr/bin/env bash
-# Start Live Training Quiz with a Cloudflare quick tunnel on the player port.
+# Start Live Training Quiz with a Cloudflare tunnel on the player port.
 # Usage:
 #   ./scripts/start-with-tunnel.sh
 #   deno task start:tunnel
 #   PUBLIC_URL=https://… ./scripts/start-with-tunnel.sh   # skip tunnel
-# Env: PLAYER_PORT (3001), PROJECTOR_PORT (3000), PUBLIC_URL, QUIZ_PATH, QUIZ_FILTER, URL_WAIT_SECS (30)
-#      TUNNEL_MODE (docker|native|auto) — default auto: docker compose, else native cloudflared
+#
+# Tunnel kinds (first match wins):
+#   TUNNEL_TOKEN + PUBLIC_URL   named tunnel, fixed hostname (cloudflared tunnel run;
+#                               token from the Cloudflare dashboard; never printed)
+#   TUNNEL_NAME  + PUBLIC_URL   named tunnel from ~/.cloudflared credentials (native only)
+#   PUBLIC_URL only             no cloudflared (you run the tunnel yourself)
+#   nothing                     quick tunnel (random *.trycloudflare.com, changes on restart)
+#
+# Env: PLAYER_PORT (3001), PROJECTOR_PORT (3000), PUBLIC_URL, QUIZ_PATH, QUIZ_FILTER, QUIZ_IDS,
+#      URL_WAIT_SECS (30), TUNNEL_MODE (docker|native|auto; default auto: docker compose, else native)
+#      HEALTH_CHECK (1; 0 = skip), HEALTH_WAIT_SECS (60), SUPERVISE_INTERVAL (2), TUNNEL_RESTART_DELAY (3)
 # Extra args are forwarded to the app (quote spaced filters), e.g.:
 #   ./scripts/start-with-tunnel.sh -- --filter live=true --filter "domain=Tool Design & MCP Integration"
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+# shellcheck source=scripts/tunnel-lib.sh
+. "${ROOT}/scripts/tunnel-lib.sh"
 
 PLAYER_PORT="${PLAYER_PORT:-3001}"
 PROJECTOR_PORT="${PROJECTOR_PORT:-3000}"
 URL_WAIT_SECS="${URL_WAIT_SECS:-30}"
 TUNNEL_MODE="${TUNNEL_MODE:-auto}"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
+HEALTH_CHECK="${HEALTH_CHECK:-1}"
+HEALTH_WAIT_SECS="${HEALTH_WAIT_SECS:-60}"
+SUPERVISE_INTERVAL="${SUPERVISE_INTERVAL:-2}"
+TUNNEL_RESTART_DELAY="${TUNNEL_RESTART_DELAY:-3}"
 
 CLOUDFLARED_PID=""
 DENO_PID=""
 TUNNEL_LOG=""
+APP_LOG=""
 OWNED_TUNNEL=0
 TUNNEL_BACKEND=""
+TUNNEL_KIND=""
 COMPOSE_CMD=()
+COMPOSE_SERVICE="cloudflared"
+APP_ARGS=("$@")
+SESSION_UUID=""
 
 cleanup() {
   local code=$?
@@ -35,20 +55,13 @@ cleanup() {
     wait "${DENO_PID}" 2>/dev/null || true
   fi
 
-  if [[ "${OWNED_TUNNEL}" -eq 1 ]]; then
-    if [[ "${TUNNEL_BACKEND}" == "docker" ]]; then
-      if [[ ${#COMPOSE_CMD[@]} -gt 0 ]]; then
-        "${COMPOSE_CMD[@]}" -f "${COMPOSE_FILE}" down --remove-orphans >/dev/null 2>&1 || true
-      fi
-    elif [[ -n "${CLOUDFLARED_PID}" ]] && kill -0 "${CLOUDFLARED_PID}" 2>/dev/null; then
-      kill "${CLOUDFLARED_PID}" 2>/dev/null || true
-      wait "${CLOUDFLARED_PID}" 2>/dev/null || true
-    fi
-  fi
+  stop_tunnel
 
-  if [[ -n "${TUNNEL_LOG}" && -f "${TUNNEL_LOG}" ]]; then
-    rm -f "${TUNNEL_LOG}"
-  fi
+  for f in "${TUNNEL_LOG}" "${APP_LOG}"; do
+    if [[ -n "${f}" && -f "${f}" ]]; then
+      rm -f "${f}"
+    fi
+  done
 
   exit "${code}"
 }
@@ -58,6 +71,19 @@ trap cleanup INT TERM EXIT
 die() {
   echo "error: $*" >&2
   exit 1
+}
+
+# Loud multi-line warning on stderr (with terminal bell).
+loud() {
+  {
+    printf '\a\n'
+    printf '!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n'
+    local line
+    for line in "$@"; do
+      printf '!!! %s\n' "${line}"
+    done
+    printf '!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n'
+  } >&2
 }
 
 resolve_compose() {
@@ -72,87 +98,238 @@ resolve_compose() {
   return 1
 }
 
-start_tunnel_docker() {
+docker_available() {
+  command -v docker >/dev/null 2>&1 || return 1
   resolve_compose || return 1
-  if ! docker info >/dev/null 2>&1; then
-    return 1
-  fi
-  if [[ ! -f "${COMPOSE_FILE}" ]]; then
-    die "compose file not found: ${COMPOSE_FILE}"
-  fi
-
-  TUNNEL_LOG="$(mktemp -t ltq-tunnel.XXXXXX)"
-  export PLAYER_PORT
-
-  echo "Starting cloudflared (docker) → http://host.docker.internal:${PLAYER_PORT}"
-  "${COMPOSE_CMD[@]}" -f "${COMPOSE_FILE}" up --abort-on-container-exit cloudflared \
-    >"${TUNNEL_LOG}" 2>&1 &
-  CLOUDFLARED_PID=$!
-  TUNNEL_BACKEND="docker"
-  OWNED_TUNNEL=1
+  docker info >/dev/null 2>&1 || return 1
+  [[ -f "${COMPOSE_FILE}" ]] || die "compose file not found: ${COMPOSE_FILE}"
   return 0
 }
 
-start_tunnel_native() {
-  if ! command -v cloudflared >/dev/null 2>&1; then
-    return 1
+# Start cloudflared for TUNNEL_KIND on TUNNEL_BACKEND; output → TUNNEL_LOG.
+launch_tunnel() {
+  : >"${TUNNEL_LOG}"
+  local origin
+  if [[ "${TUNNEL_BACKEND}" == "docker" ]]; then
+    export PLAYER_PORT
+    # Remove a stale container from a previous run of this service
+    "${COMPOSE_CMD[@]}" -f "${COMPOSE_FILE}" rm -sf "${COMPOSE_SERVICE}" >/dev/null 2>&1 || true
+    echo "Starting cloudflared (docker, ${TUNNEL_KIND}) → http://host.docker.internal:${PLAYER_PORT}"
+    "${COMPOSE_CMD[@]}" -f "${COMPOSE_FILE}" up --abort-on-container-exit "${COMPOSE_SERVICE}" \
+      >"${TUNNEL_LOG}" 2>&1 &
+  else
+    origin="http://127.0.0.1:${PLAYER_PORT}"
+    echo "Starting cloudflared (native, ${TUNNEL_KIND}) → ${origin}"
+    case "${TUNNEL_KIND}" in
+      quick)
+        cloudflared tunnel --no-autoupdate --url "${origin}" >"${TUNNEL_LOG}" 2>&1 &
+        ;;
+      token)
+        # Token is read from the TUNNEL_TOKEN env var (kept off the command line)
+        cloudflared tunnel --no-autoupdate run >"${TUNNEL_LOG}" 2>&1 &
+        ;;
+      named)
+        cloudflared tunnel --no-autoupdate run --url "${origin}" "${TUNNEL_NAME}" \
+          >"${TUNNEL_LOG}" 2>&1 &
+        ;;
+    esac
   fi
-
-  TUNNEL_LOG="$(mktemp -t ltq-tunnel.XXXXXX)"
-  ORIGIN="http://127.0.0.1:${PLAYER_PORT}"
-
-  echo "Starting cloudflared (native) → ${ORIGIN}"
-  cloudflared tunnel --url "${ORIGIN}" >"${TUNNEL_LOG}" 2>&1 &
   CLOUDFLARED_PID=$!
-  TUNNEL_BACKEND="native"
   OWNED_TUNNEL=1
-  return 0
 }
 
+stop_tunnel() {
+  [[ "${OWNED_TUNNEL}" -eq 1 ]] || return 0
+  if [[ "${TUNNEL_BACKEND}" == "docker" ]]; then
+    if [[ ${#COMPOSE_CMD[@]} -gt 0 ]]; then
+      "${COMPOSE_CMD[@]}" -f "${COMPOSE_FILE}" down --remove-orphans >/dev/null 2>&1 || true
+    fi
+  fi
+  if [[ -n "${CLOUDFLARED_PID}" ]] && kill -0 "${CLOUDFLARED_PID}" 2>/dev/null; then
+    kill "${CLOUDFLARED_PID}" 2>/dev/null || true
+    wait "${CLOUDFLARED_PID}" 2>/dev/null || true
+  fi
+}
+
+# Quick tunnel: parse the public URL from the log into PARSED_URL.
+# $1 = fatal|soft. soft returns 1 on failure instead of exiting.
 wait_for_public_url() {
+  local mode="$1" deadline
   echo "Waiting up to ${URL_WAIT_SECS}s for public URL…"
-  PARSED=""
+  PARSED_URL=""
   deadline=$((SECONDS + URL_WAIT_SECS))
   while (( SECONDS < deadline )); do
+    PARSED_URL="$(extract_quick_tunnel_url "${TUNNEL_LOG}")"
+    [[ -n "${PARSED_URL}" ]] && break
     if ! kill -0 "${CLOUDFLARED_PID}" 2>/dev/null; then
-      echo "error: cloudflared exited before publishing a URL" >&2
-      echo "--- cloudflared log ---" >&2
-      cat "${TUNNEL_LOG}" >&2 || true
-      exit 1
-    fi
-    if PARSED="$(grep -Eo 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' "${TUNNEL_LOG}" 2>/dev/null | head -n1)"; then
-      if [[ -n "${PARSED}" ]]; then
-        break
-      fi
+      break
     fi
     sleep 0.25
   done
 
-  if [[ -z "${PARSED}" ]]; then
-    echo "error: no public HTTPS URL from cloudflared within ${URL_WAIT_SECS}s" >&2
+  if [[ -z "${PARSED_URL}" ]]; then
+    echo "error: no public https://<name>.trycloudflare.com URL from cloudflared" >&2
     echo "--- cloudflared log ---" >&2
     cat "${TUNNEL_LOG}" >&2 || true
-    exit 1
+    [[ "${mode}" == "fatal" ]] && exit 1
+    return 1
   fi
+  echo "Tunnel ready: ${PARSED_URL}"
+  return 0
+}
 
-  PUBLIC_URL="${PARSED%/}"
-  export PUBLIC_URL
-  echo "Tunnel ready: ${PUBLIC_URL}"
+start_app() {
+  : >"${APP_LOG}"
+  # stdout is copied to APP_LOG so the session id can be read for health checks
+  deno run -P main.ts -- ${APP_ARGS[@]+"${APP_ARGS[@]}"} > >(tee -a "${APP_LOG}") &
+  DENO_PID=$!
+}
+
+app_alive() {
+  [[ -n "${DENO_PID}" ]] && kill -0 "${DENO_PID}" 2>/dev/null
+}
+
+# Read the session id the app printed ("Session id: <uuid>").
+wait_for_session_id() {
+  local deadline=$((SECONDS + HEALTH_WAIT_SECS))
+  SESSION_UUID=""
+  while (( SECONDS < deadline )); do
+    SESSION_UUID="$(sed -n 's/^Session id: \([0-9a-fA-F-]*\).*/\1/p' "${APP_LOG}" | head -n1)"
+    [[ -n "${SESSION_UUID}" ]] && return 0
+    app_alive || return 1
+    sleep 0.25
+  done
+  return 1
+}
+
+# Poll a player state URL until it returns the player JSON.
+wait_http_ok() {
+  local url="$1" deadline=$((SECONDS + HEALTH_WAIT_SECS))
+  while (( SECONDS < deadline )); do
+    if curl -fsS --max-time 5 "${url}" 2>/dev/null | grep -q '"role":"player"'; then
+      return 0
+    fi
+    app_alive || return 1
+    sleep 1
+  done
+  return 1
+}
+
+# Check the app answers locally and through PUBLIC_URL. Returns 1 on failure.
+health_check() {
+  if [[ "${HEALTH_CHECK}" == "0" ]]; then
+    echo "Health check skipped (HEALTH_CHECK=0)"
+    return 0
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    loud "curl not found: cannot verify that PUBLIC_URL answers." \
+      "Open ${PUBLIC_URL} on a phone (mobile data) before the course starts."
+    return 0
+  fi
+  if ! wait_for_session_id; then
+    loud "Health check: the quiz app did not print its session id." \
+      "Check the app output above."
+    return 1
+  fi
+  local path="/s/${SESSION_UUID}/api/state"
+  echo "Health check: ${PUBLIC_URL}${path}"
+  if ! wait_http_ok "http://127.0.0.1:${PLAYER_PORT}${path}"; then
+    loud "Health check FAILED: the app does not answer on 127.0.0.1:${PLAYER_PORT}." \
+      "Check the app output above."
+    return 1
+  fi
+  if ! wait_http_ok "${PUBLIC_URL}${path}"; then
+    loud "Health check FAILED: PUBLIC_URL does not answer within ${HEALTH_WAIT_SECS}s:" \
+      "  ${PUBLIC_URL}${path}" \
+      "Phones will NOT be able to join. Check the tunnel / PUBLIC_URL." \
+      "(Set HEALTH_CHECK=0 to start anyway.)"
+    return 1
+  fi
+  echo "Health check OK: phones can reach ${PUBLIC_URL}"
+  return 0
+}
+
+# Restart the app with the current PUBLIC_URL. The session is restored from
+# its snapshot (same id, never SESSION_FRESH) so the room continues.
+restart_app() {
+  if app_alive; then
+    kill "${DENO_PID}" 2>/dev/null || true
+    wait "${DENO_PID}" 2>/dev/null || true
+  fi
+  export SESSION_FRESH=0
+  if [[ -n "${SESSION_UUID}" ]]; then
+    export SESSION_ID="${SESSION_UUID}"
+  fi
+  start_app
+}
+
+# cloudflared exited: warn loudly, restart it, and follow a hostname change.
+handle_tunnel_exit() {
+  local tail_log
+  tail_log="$(tail -n 15 "${TUNNEL_LOG}" 2>/dev/null || true)"
+  loud "cloudflared EXITED: phones cannot reach the quiz right now." \
+    "Restarting cloudflared in ${TUNNEL_RESTART_DELAY}s…"
+  if [[ -n "${tail_log}" ]]; then
+    echo "--- last cloudflared output ---" >&2
+    echo "${tail_log}" >&2
+  fi
+  sleep "${TUNNEL_RESTART_DELAY}"
+  launch_tunnel
+
+  if [[ "${TUNNEL_KIND}" == "quick" ]]; then
+    wait_for_public_url soft || return 0 # still down; retried next loop
+    if [[ "${PARSED_URL}" != "${PUBLIC_URL}" ]]; then
+      loud "Quick tunnel hostname CHANGED:" \
+        "  old: ${PUBLIC_URL}" \
+        "  new: ${PARSED_URL}" \
+        "The lobby QR is being refreshed (app restarts with the new PUBLIC_URL;" \
+        "session, roster and scores are restored from the snapshot)." \
+        "Phones on the old URL must RESCAN the QR and JOIN AGAIN (new origin =" \
+        "new browser storage, so their old player and score are not linked)." \
+        "Use a named tunnel (TUNNEL_TOKEN) to avoid this."
+      PUBLIC_URL="${PARSED_URL}"
+      export PUBLIC_URL
+      restart_app
+    fi
+  fi
+  health_check || loud "Tunnel restarted but the health check failed; will keep watching."
 }
 
 if ! command -v deno >/dev/null 2>&1; then
   die "deno not found on PATH. Install: https://deno.land"
 fi
 
-# If PUBLIC_URL already set, skip cloudflared
-if [[ -n "${PUBLIC_URL:-}" ]]; then
+# Pick the tunnel kind
+if [[ -n "${TUNNEL_TOKEN:-}" ]]; then
+  TUNNEL_KIND="token"
+  [[ -n "${PUBLIC_URL:-}" ]] || die "TUNNEL_TOKEN needs PUBLIC_URL=https://<your tunnel hostname>"
+  export TUNNEL_TOKEN
+elif [[ -n "${TUNNEL_NAME:-}" ]]; then
+  TUNNEL_KIND="named"
+  [[ -n "${PUBLIC_URL:-}" ]] || die "TUNNEL_NAME needs PUBLIC_URL=https://<your tunnel hostname>"
+  [[ "${TUNNEL_MODE}" != "docker" ]] || die "TUNNEL_NAME needs TUNNEL_MODE=native (or use TUNNEL_TOKEN with docker)"
+  TUNNEL_MODE="native"
+elif [[ -n "${PUBLIC_URL:-}" ]]; then
+  TUNNEL_KIND="external"
+else
+  TUNNEL_KIND="quick"
+fi
+if [[ "${TUNNEL_KIND}" == "token" ]]; then
+  COMPOSE_SERVICE="cloudflared-named"
+  export COMPOSE_PROFILES="named"
+fi
+
+APP_LOG="$(mktemp -t ltq-app.XXXXXX)"
+
+if [[ "${TUNNEL_KIND}" == "external" ]]; then
   PUBLIC_URL="${PUBLIC_URL%/}"
   export PUBLIC_URL
   echo "Using existing PUBLIC_URL=${PUBLIC_URL} (skipping cloudflared)"
 else
+  TUNNEL_LOG="$(mktemp -t ltq-tunnel.XXXXXX)"
   case "${TUNNEL_MODE}" in
     docker)
-      start_tunnel_docker || {
+      docker_available || {
         cat >&2 <<EOF
 error: docker compose tunnel failed (need Docker + docker compose).
 
@@ -166,9 +343,10 @@ Or start localhost-only (no phones):
 EOF
         exit 1
       }
+      TUNNEL_BACKEND="docker"
       ;;
     native)
-      start_tunnel_native || {
+      command -v cloudflared >/dev/null 2>&1 || {
         cat >&2 <<EOF
 error: cloudflared not found on PATH.
 
@@ -182,14 +360,18 @@ Or start localhost-only (no phones):
 EOF
         exit 1
       }
+      TUNNEL_BACKEND="native"
       ;;
     auto)
-      if ! start_tunnel_docker; then
-        if ! start_tunnel_native; then
-          cat >&2 <<EOF
+      if docker_available; then
+        TUNNEL_BACKEND="docker"
+      elif command -v cloudflared >/dev/null 2>&1; then
+        TUNNEL_BACKEND="native"
+      else
+        cat >&2 <<EOF
 error: no tunnel backend available.
 
-Preferred: Docker + docker compose (cloudflare/cloudflared:latest)
+Preferred: Docker + docker compose (cloudflare/cloudflared image)
   Install: https://docs.docker.com/get-docker/
 
 Fallback: cloudflared on PATH
@@ -198,8 +380,7 @@ Fallback: cloudflared on PATH
 Or start localhost-only (no phones):
   deno task start
 EOF
-          exit 1
-        fi
+        exit 1
       fi
       ;;
     *)
@@ -207,7 +388,15 @@ EOF
       ;;
   esac
 
-  wait_for_public_url
+  launch_tunnel
+  if [[ "${TUNNEL_KIND}" == "quick" ]]; then
+    wait_for_public_url fatal
+    PUBLIC_URL="${PARSED_URL}"
+  else
+    PUBLIC_URL="${PUBLIC_URL%/}"
+    echo "Named tunnel (${TUNNEL_KIND}); fixed hostname ${PUBLIC_URL}"
+  fi
+  export PUBLIC_URL
 fi
 
 export PLAYER_PORT PROJECTOR_PORT
@@ -218,13 +407,22 @@ echo "  Player join URL (QR):       ${PUBLIC_URL}"
 echo "  Ctrl+C stops app and tunnel"
 echo
 
-deno run -P main.ts -- "$@" &
-DENO_PID=$!
+start_app
+health_check || exit 1
 
-# Wait for Deno; propagate its exit code (cleanup trap stops tunnel)
-set +e
-wait "${DENO_PID}"
-code=$?
-set -e
-DENO_PID=""
-exit "${code}"
+# Supervise: exit with the app's code if it stops; restart cloudflared if it dies.
+while true; do
+  if ! app_alive; then
+    set +e
+    wait "${DENO_PID}"
+    code=$?
+    set -e
+    DENO_PID=""
+    exit "${code}"
+  fi
+  if [[ "${OWNED_TUNNEL}" -eq 1 ]] && ! kill -0 "${CLOUDFLARED_PID}" 2>/dev/null; then
+    wait "${CLOUDFLARED_PID}" 2>/dev/null || true
+    handle_tunnel_exit
+  fi
+  sleep "${SUPERVISE_INTERVAL}"
+done

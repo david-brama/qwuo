@@ -57,15 +57,50 @@ deno task start:tunnel
 
 Do **not** tunnel the projector port — it is localhost-only on purpose (host controls).
 
-If `PUBLIC_URL` is already set, the script skips starting cloudflared and just runs the app with that join origin.
+If `PUBLIC_URL` is already set (and no `TUNNEL_TOKEN` / `TUNNEL_NAME`), the script skips starting cloudflared and just runs the app with that join origin.
 
-### Tunnel backend
+What the script does for you:
 
-| `TUNNEL_MODE` | Behavior |
-|---------------|----------|
-| `auto` (default) | Docker Compose first, then native `cloudflared` |
-| `docker` | Compose only (`docker-compose.yml` → `cloudflare/cloudflared:latest`) |
-| `native` | `cloudflared` on PATH only (handy on Linux if Docker can’t reach host loopback) |
+- **URL check:** it only accepts a real `https://<name>.trycloudflare.com` quick-tunnel hostname from the cloudflared output (never `api.trycloudflare.com` from an error line).
+- **Health check:** after the app starts, it fetches `PUBLIC_URL/s/<session>/api/state` (local port first, then the public URL). If the public URL does not answer within `HEALTH_WAIT_SECS` (default 60), it prints a loud error and **stops**. `HEALTH_CHECK=0` skips this.
+- **Supervision:** if cloudflared exits, it prints a loud warning and restarts it. For a **quick** tunnel the hostname changes on restart: the script restarts the app with the new `PUBLIC_URL` (the session, roster and scores are restored from the snapshot, so the lobby QR is correct again), but **phones on the old URL must rescan the QR and join again** (a new hostname is a new browser origin, so their saved player id is gone). A named tunnel avoids this.
+
+### Stable hostname (named tunnel, recommended for the course)
+
+A quick tunnel has no uptime guarantee and gets a new random hostname on every start. A named tunnel keeps one fixed hostname (needs a Cloudflare account and a domain on Cloudflare).
+
+**Token (works with Docker or native cloudflared):**
+
+1. Cloudflare dashboard → Zero Trust → Networks → Tunnels → **Create a tunnel** (cloudflared) → copy the token.
+2. Add a **public hostname**, e.g. `quiz.example.com`, with service:
+   - Docker backend: `http://host.docker.internal:3001`
+   - Native backend: `http://localhost:3001`
+3. Start:
+
+```bash
+TUNNEL_TOKEN='<token>' PUBLIC_URL=https://quiz.example.com deno task start:tunnel
+```
+
+The token is passed to cloudflared through the environment (not the command line) and is never printed.
+
+**Locally managed tunnel (native cloudflared only):** after `cloudflared tunnel login`, `cloudflared tunnel create qwuo` and `cloudflared tunnel route dns qwuo quiz.example.com`:
+
+```bash
+TUNNEL_NAME=qwuo PUBLIC_URL=https://quiz.example.com TUNNEL_MODE=native deno task start:tunnel
+```
+
+### Tunnel settings
+
+| Env var | Default | Meaning |
+|---------|---------|---------|
+| `TUNNEL_MODE` | `auto` | `auto`: Docker Compose first, then native `cloudflared`. `docker`: Compose only (`docker-compose.yml`, image pinned to `cloudflare/cloudflared:2026.10.5`). `native`: `cloudflared` on PATH only (handy on Linux if Docker can’t reach host loopback) |
+| `TUNNEL_TOKEN` | _(unset)_ | Named tunnel token → `cloudflared tunnel run`; needs `PUBLIC_URL` |
+| `TUNNEL_NAME` | _(unset)_ | Locally managed named tunnel (native only); needs `PUBLIC_URL` |
+| `URL_WAIT_SECS` | `30` | Max wait for the quick-tunnel URL |
+| `HEALTH_CHECK` | `1` | `0` = skip the public URL check |
+| `HEALTH_WAIT_SECS` | `60` | Max wait for the app / public URL to answer |
+| `SUPERVISE_INTERVAL` | `2` | Seconds between cloudflared liveness checks |
+| `TUNNEL_RESTART_DELAY` | `3` | Seconds before restarting a dead cloudflared |
 
 After Ctrl+C, sanity-check for orphans:
 
@@ -355,8 +390,9 @@ Treat the host machine and `quiz.json` as the trust boundary.
 main.ts                      Boot: load quiz → restore session → both servers
 quiz.schema.json             Documented JSON Schema for quiz files
 quiz.json                    Your bank (gitignored sample; create your own)
-docker-compose.yml           cloudflared quick tunnel → player port
-scripts/start-with-tunnel.sh deno task start:tunnel
+docker-compose.yml           cloudflared (quick or named) tunnel → player port
+scripts/start-with-tunnel.sh deno task start:tunnel (health check + supervision)
+scripts/tunnel-lib.sh        Quick-tunnel URL parsing (tested by scripts/tunnel_test.ts)
 src/
   config.ts                  Env + CLI filters
   quiz.ts                    Load, validate, filter helpers, countdown resolve
@@ -378,7 +414,7 @@ openspec/                    Specs and archived change proposals
 | `deno task start` | Run the app |
 | `deno task start:tunnel` | Tunnel + app |
 | `deno task dev` | Watch mode |
-| `deno task test` | Unit tests under `src/` |
+| `deno task test` | Unit tests under `src/` and tunnel script tests under `scripts/` |
 
 ---
 
@@ -394,6 +430,8 @@ openspec/                    Specs and archived change proposals
 | Snapshot ignored after editing quiz | Fingerprint changed (text/choices/correct/explain/title) — new LOBBY is intentional |
 | Custom `QUIZ_PATH` permission error | Add the path under `deno.json` → `permissions.default.read` |
 | Docker tunnel can’t reach app (Linux) | Try `TUNNEL_MODE=native` |
+| `Health check FAILED: PUBLIC_URL does not answer` | Quick tunnel DNS can be slow: retry, or raise `HEALTH_WAIT_SECS`. Named tunnel: check the public hostname’s service URL in the dashboard |
+| `cloudflared EXITED` / `hostname CHANGED` | The script restarted the tunnel. Quick tunnel: phones must rescan the new QR and join again. Use a named tunnel to avoid this |
 
 ---
 

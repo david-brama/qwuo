@@ -3,7 +3,7 @@
     "start": "deno run -P main.ts",
     "start:tunnel": "./scripts/start-with-tunnel.sh",
     "dev": "deno run -P --watch main.ts",
-    "test": "deno test -A src/"
+    "test": "deno test -A src/ scripts/"
   },
   "permissions": {
     "default": {
