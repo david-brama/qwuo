@@ -94,6 +94,7 @@ export function playerHtml(logoHtml = ""): string {
     let state = null;
     let lastFeedback = null; // { correct, correctIndex, score, questionIndex }
     let answering = false;
+    let renderedQuestionKey = null; // question whose buttons are on screen
     let countdownTickTimer = null;
 
     const views = {
@@ -221,18 +222,29 @@ export function playerHtml(logoHtml = ""): string {
 
       if (phase === "QUESTION" && !answered && !lastFeedback) {
         show("question");
-        document.getElementById("q-meta").textContent =
-          "Question " + (state.questionIndex + 1) + " of " + state.questionCount;
-        document.getElementById("q-text").innerHTML = md(state.question.text);
         const box = document.getElementById("q-choices");
-        box.innerHTML = state.question.choices.map((c, i) =>
-          \`<button type="button" class="choice" data-i="\${i}" \${answering ? "disabled" : ""}>
-            <span class="choice-letter">\${LETTERS[i] || i + 1}: </span>\${esc(c)}
-          </button>\`
-        ).join("");
-        document.getElementById("answer-error").textContent = "";
+        // Rebuild only for a new question: replacing the buttons on every
+        // poll drops a press that is still held down when the poll lands
+        const key = JSON.stringify([
+          state.questionIndex, state.question.text, state.question.choices,
+        ]);
+        if (key !== renderedQuestionKey) {
+          renderedQuestionKey = key;
+          document.getElementById("q-meta").textContent =
+            "Question " + (state.questionIndex + 1) + " of " + state.questionCount;
+          document.getElementById("q-text").innerHTML = md(state.question.text);
+          box.innerHTML = state.question.choices.map((c, i) =>
+            \`<button type="button" class="choice" data-i="\${i}">
+              <span class="choice-letter">\${LETTERS[i] || i + 1}: </span>\${esc(c)}
+            </button>\`
+          ).join("");
+          document.getElementById("answer-error").textContent = "";
+          box.querySelectorAll(".choice").forEach((btn) => {
+            btn.addEventListener("click", () => submitAnswer(Number(btn.dataset.i)));
+          });
+        }
         box.querySelectorAll(".choice").forEach((btn) => {
-          btn.addEventListener("click", () => submitAnswer(Number(btn.dataset.i)));
+          btn.disabled = answering;
         });
         return;
       }

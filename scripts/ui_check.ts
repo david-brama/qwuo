@@ -536,6 +536,50 @@ async function checkReconnectBanner(
 }
 
 // --------------------------------------------------------------------------
+// Phone: slow (400 ms) presses on a choice must all register even though the
+// state poll runs every second. Answers are stubbed to fail so the question
+// stays on screen; every registered press is one /api/answer request.
+
+export const SLOW_PRESSES = 20;
+
+async function checkSlowPresses(phone: Page): Promise<string[]> {
+  const fails: string[] = [];
+  const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  let hits = 0;
+  await phone.route("**/api/answer", (r) => {
+    hits++;
+    return r.fulfill({
+      status: 400,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "ui_check: press counted" }),
+    });
+  });
+  try {
+    for (let i = 0; i < SLOW_PRESSES; i++) {
+      const btn = phone.locator("#q-choices .choice").nth(i % 2);
+      await btn.scrollIntoViewIfNeeded();
+      const box = await btn.boundingBox();
+      if (!box) {
+        fails.push("no choice button to press");
+        break;
+      }
+      await phone.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await phone.mouse.down();
+      await pause(400);
+      await phone.mouse.up();
+      await pause(150);
+    }
+    await pause(300);
+  } finally {
+    await phone.unroute("**/api/answer");
+  }
+  if (hits !== SLOW_PRESSES) {
+    fails.push(`${hits}/${SLOW_PRESSES} slow (400 ms) presses registered`);
+  }
+  return fails;
+}
+
+// --------------------------------------------------------------------------
 // Auto-hiding host controls and the Reset confirm
 
 async function checkHostChrome(
@@ -842,6 +886,10 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
       if (want) {
         await phone.waitForSelector("#view-question.active");
         await shot(phone, `player-${nm("question")}-${phoneVp}`);
+      }
+      if (qi === 0) {
+        await phone.waitForSelector("#view-question.active");
+        for (const f of await checkSlowPresses(phone)) failures.push(`${phoneVp} ${tag}: ${f}`);
       }
       // A few answers so the counters are non-zero
       // (the per-player rate limit rejects some in a fast full run)
