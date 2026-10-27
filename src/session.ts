@@ -146,6 +146,31 @@ export function normalizeParticipantName(name: string): string {
   return name.replace(/[\u0000-\u001F\u007F]/g, "").trim();
 }
 
+/** Key for duplicate-name checks: case- and whitespace-insensitive. */
+export function participantNameKey(name: string): string {
+  return name.normalize("NFC").replace(/\s+/g, " ").trim().toLocaleLowerCase();
+}
+
+/**
+ * `name`, or `name (2)`, `name (3)`, … when the name is already taken
+ * (see participantNameKey). The base is cut so the result stays within
+ * MAX_NAME_LENGTH.
+ */
+export function uniqueParticipantName(
+  name: string,
+  taken: ReadonlySet<string>,
+): string {
+  if (!taken.has(participantNameKey(name))) return name;
+  for (let n = 2;; n++) {
+    const suffix = ` (${n})`;
+    // Drop whole code points so an emoji is never split
+    const chars = [...name];
+    while (chars.join("").length + suffix.length > MAX_NAME_LENGTH) chars.pop();
+    const candidate = chars.join("").trimEnd() + suffix;
+    if (!taken.has(participantNameKey(candidate))) return candidate;
+  }
+}
+
 function cloneQuestions(questions: Question[]): Question[] {
   return questions.map(copyQuestion);
 }
@@ -582,17 +607,22 @@ export class Session {
         400,
       );
     }
+    // Two "Dana"s on the leaderboard are indistinguishable: suffix the later one
+    const taken = new Set(
+      [...this.participants.values()].map((p) => participantNameKey(p.name)),
+    );
+    const unique = uniqueParticipantName(trimmed, taken);
     const id = crypto.randomUUID();
     const participant: Participant = {
       id,
-      name: trimmed,
+      name: unique,
       joinOrder: this.nextJoinOrder++,
       score: 0,
       answers: new Map(),
     };
     this.participants.set(id, participant);
     this.markSeen(id);
-    return { id, name: trimmed };
+    return { id, name: unique };
   }
 
   /** Record that a participant's phone is connected (poll, join, answer). */

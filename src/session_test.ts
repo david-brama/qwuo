@@ -8,7 +8,9 @@ import {
   engagementWindowIndices,
   isActiveParticipant,
   legacyRevealedThrough,
+  MAX_NAME_LENGTH,
   ONLINE_WINDOW_MS,
+  participantNameKey,
   Session,
   SessionError,
 } from "./session.ts";
@@ -920,4 +922,33 @@ Deno.test("answer progress: unknown ids are ignored; END reports 0 answered", ()
   assertEquals(session.projectorState().answeredCount, 1);
   session.advance(); // END
   assertEquals(session.projectorState().answeredCount, 0);
+});
+
+Deno.test("duplicate names get a (2), (3) suffix; case and spaces ignored", () => {
+  const session = new Session(sampleQuiz, { randomInt: alwaysZero });
+  assertEquals(session.join("Dana").name, "Dana");
+  assertEquals(session.join("dana").name, "dana (2)");
+  assertEquals(session.join("  DANA ").name, "DANA (3)");
+  assertEquals(session.join("Dana (2)").name, "Dana (2) (2)");
+  assertEquals(session.join("Dana Cohen").name, "Dana Cohen");
+  assertEquals(session.join("dana   cohen").name, "dana   cohen (2)");
+  // Leaderboard and the player's own state use the suffixed name
+  const names = session.leaderboard().map((r) => r.name);
+  assertEquals(names.includes("dana (2)"), true);
+  const { id } = session.join("Dana");
+  assertEquals(session.playerState(id).participant!.name, "Dana (4)");
+  assertEquals(participantNameKey("  Ab\tC "), "ab c");
+});
+
+Deno.test("duplicate-name suffix keeps the name within MAX_NAME_LENGTH", () => {
+  const session = new Session(sampleQuiz, { randomInt: alwaysZero });
+  const long = "x".repeat(MAX_NAME_LENGTH);
+  session.join(long);
+  const second = session.join(long).name;
+  assertEquals(second, "x".repeat(MAX_NAME_LENGTH - 4) + " (2)");
+  const emoji = "🙂".repeat(MAX_NAME_LENGTH / 2);
+  session.join(emoji);
+  const e2 = session.join(emoji).name;
+  assertEquals(e2.length <= MAX_NAME_LENGTH, true);
+  assertEquals(e2.endsWith("🙂 (2)"), true);
 });
