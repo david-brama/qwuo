@@ -196,11 +196,32 @@ export function projectorHtml(
       fitMain();
     }
 
+    /** Smallest explanation font (px) before EXPLAIN drops the wrong choices. */
+    function explainMinPx() {
+      return innerHeight >= 1000 ? 36 : 28;
+    }
+
+    /**
+     * Fit the slide. EXPLAIN on short screens, or when fitting would push the
+     * explanation below explainMinPx(), shows only the correct choice.
+     */
+    function fitMain() {
+      const explain = main.querySelector(".explain-slide");
+      if (explain) explain.classList.toggle("explain-compact", innerHeight < 900);
+      fitSlide();
+      if (!explain || explain.classList.contains("explain-compact")) return;
+      const box = explain.querySelector(".explain-box");
+      if (box && parseFloat(getComputedStyle(box).fontSize) < explainMinPx()) {
+        explain.classList.add("explain-compact");
+        fitSlide();
+      }
+    }
+
     /**
      * Shrink the slide (fonts, QR) via --fit until #main no longer
      * overflows. Sizes in CSS are the maximum; nothing ever scrolls.
      */
-    function fitMain() {
+    function fitSlide() {
       // scrollHeight rounds to whole px; also compare exact child boxes
       const over = () => {
         if (
@@ -746,7 +767,8 @@ export function projectorHtml(
       }
 
       if (state.phase === "EXPLAIN") {
-        // Question and choices condensed so the explanation keeps the space
+        // Question and choices condensed so the explanation keeps the space;
+        // fitMain() may hide the wrong choices (explain-compact)
         return \`
           <div class="slide-content explain-slide">
             <div class="q-text q-recap">\${md(q.text)}</div>

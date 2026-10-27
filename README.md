@@ -162,7 +162,7 @@ PUBLIC_URL=https://YOUR-SUBDOMAIN.trycloudflare.com deno task start
 6. **Next** leaves LOBBY into the first QUESTION.
 7. During QUESTION, phones answer once and see only **Answer locked in** with the choice they picked; correct/incorrect and the correct answer appear on the phone when the answer is revealed (CORRECT), so nobody can tell neighbours early. The result comes from the server, so it survives a page reload. You still control the room pace with Next/Back (unless a countdown expires).
    The header shows **X of N answered**: X = answers to this question, N = participants who can answer it (phone polled in the last 15 s, or already answered), so closed or abandoned phones do not inflate N. The footer keeps `joined`, `online` and `active` (≥ 2 answers in the last 4 questions).
-8. Flow: show correct → explanation → leaderboard → next question… → END. The explanation slide repeats the question and the choices (condensed), with the correct choice marked by ✓, bold text and a thick outline. The leaderboard shows the top 10 with scores out of the questions asked so far; tied scores share a rank (1, 1, 3). END shows the final standings on a podium.
+8. Flow: show correct → explanation → leaderboard → next question… → END. The explanation slide repeats the question and the correct choice, marked by ✓, bold text and a thick outline. On screens 900 px tall or more it also shows the other choices, unless that would make the explanation text too small. The leaderboard shows the top 10 with scores out of the questions asked so far; tied scores share a rank (1, 1, 3). END shows the final standings on a podium.
 9. **Back** steps one phase backward (does not wipe scores). Back from CORRECT shows the question again **read-only** ("Answers closed"): no timer, answers are rejected, Next reveals it again. Re-entering a question whose answer was **not** shown yet starts a full timer.
 10. **Reset** (soft): back to LOBBY, clear runtime filters and per-question answers, **keep** names, **zero** scores, **same** session URL/QR. Snapshot is updated, not deleted.
 
@@ -474,7 +474,7 @@ openspec/                    Specs and archived change proposals
 - a choice, the question, the explanation, a leaderboard row or the join URL is outside the viewport, clipped by a parent, cut inside its box, or covered by another element
 - the lobby QR is outside the viewport, covered, smaller than about `min(65vh, 45vw)`, or does not decode (jsQR) to the join URL
 - the footer wraps, or question/choice text is below the floor (1080p: 40 px / 30 px; other sizes: 24 px / 20 px)
-- CORRECT/EXPLAIN do not mark exactly one choice ✓, EXPLAIN does not show the question, or the explanation (choices) fall below 30 px (22 px) at 1080p / 18 px (14 px) elsewhere
+- CORRECT/EXPLAIN do not mark exactly one choice ✓, EXPLAIN does not show the question, EXPLAIN below 900 px tall shows more than the correct choice, or the explanation (choices) fall below 36 px (22 px) at 1080p / 28 px (14 px) elsewhere
 - the countdown is missing on a timed question, shown when answers are locked, smaller than 44 px (1080p) / 28 px, or its ring or time bar overlaps the logo, QR, counter or slide
 - the host controls do not hide after 3 s idle or do not come back on mouse movement / a key, or Reset does not use the in-page confirm (Enter/Escape cancel; a native dialog fails the check)
 - the reconnecting banner does not appear when `/api/state` fails twice in a row, appears after one failure, or does not clear on recovery

@@ -553,7 +553,15 @@ body {
   line-height: 1.22;
 }
 .explain-slide .explain-box {
-  font-size: calc(clamp(18px, min(3.6vh, 2.2vw), 46px) * var(--fit) * var(--q-scale));
+  font-size: calc(clamp(18px, min(4vh, 2.4vw), 48px) * var(--fit) * var(--q-scale));
+}
+/* Tight screens: only the correct choice (✓) stays, the explanation grows */
+.explain-compact .choices-recap .choice:not(.highlight) { display: none; }
+.explain-compact .choices.choices-recap .choice {
+  font-size: calc(clamp(16px, min(2.9vh, 2vw), 36px) * var(--fit) * var(--q-scale));
+}
+.explain-slide.explain-compact .explain-box {
+  font-size: calc(clamp(24px, min(4.8vh, 3.2vw), 56px) * var(--fit) * var(--q-scale));
 }
 
 .explain-box {

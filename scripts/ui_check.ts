@@ -37,8 +37,8 @@ const FONT_FLOORS: Record<
     recap: number;
   }
 > = {
-  "1920x1080": { q: 40, choice: 30, lb: 40, timer: 44, explain: 30, recap: 22 },
-  default: { q: 24, choice: 20, lb: 22, timer: 28, explain: 18, recap: 14 },
+  "1920x1080": { q: 40, choice: 30, lb: 40, timer: 44, explain: 36, recap: 22 },
+  default: { q: 24, choice: 20, lb: 22, timer: 28, explain: 28, recap: 14 },
 };
 
 const PUBLIC_URL = "https://quiet-harbor-example-lantern.trycloudflare.com";
@@ -259,8 +259,9 @@ export interface Measure {
   podium: number;
   /** "X of N" answered counter text, when shown. */
   answered: string | null;
-  /** EXPLAIN recap: choice font, highlighted+✓ choices, question shown. */
+  /** EXPLAIN recap: choice font, choices shown, highlighted+✓ choices, question shown. */
   recapFont: number | null;
+  recapChoices: number;
   correctMarks: number;
   recapQuestion: number;
   /** Countdown seconds font (px) when the countdown is shown. */
@@ -429,6 +430,7 @@ function measureInPage(): Measure {
     qFont: font("#main .q-text:not(.q-recap)"),
     choiceFont: font("#main .choices:not(.choices-recap) .choice"),
     recapFont: font("#main .choices-recap .choice"),
+    recapChoices: [...document.querySelectorAll("#main .choices-recap .choice")].filter(visible).length,
     correctMarks: [...document.querySelectorAll("#main .choice.highlight")]
       .filter((el) => el.querySelector(".choice-mark") && visible(el)).length,
     recapQuestion: [...document.querySelectorAll("#main .q-recap")].filter(visible).length,
@@ -965,6 +967,10 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
         if (tag === "explain") {
           if (m.recapQuestion !== 1) failures.push(`${vp} ${label}: question not shown above the explanation`);
           if (m.correctMarks !== 1) failures.push(`${vp} ${label}: ${m.correctMarks} choices marked ✓ correct, want 1`);
+          // Below 900px tall only the correct choice is left above the explanation
+          if (h < 900 && m.recapChoices !== 1) {
+            failures.push(`${vp} ${label}: ${m.recapChoices} choices above the explanation, want only the correct one`);
+          }
           if (m.explainFont !== null && m.explainFont < floor.explain) {
             failures.push(`${vp} ${label}: explanation font ${m.explainFont}px < ${floor.explain}px`);
           }
