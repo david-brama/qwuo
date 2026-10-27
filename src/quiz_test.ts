@@ -7,12 +7,14 @@ import {
 } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
   buildMetadataFilterFacets,
+  choiceOrder,
   collectQuestionMetadataKeys,
   effectiveCountdownSeconds,
   filterQuestionsByMetadata,
   formatEmptyFilterDiagnostic,
   loadQuiz,
   parseFilterEntry,
+  remapChoiceLetters,
   resolveSlideMetadata,
   shuffleQuestionChoices,
   suggestMetadataKeys,
@@ -617,6 +619,69 @@ Deno.test("shuffleQuestionChoices: injected RNG yields known permutation", () =>
   assertEquals(shuffled.choices, ["C", "A", "B"]);
   assertEquals(shuffled.correct, 2); // "B" at index 2
   assertEquals(shuffled.choices[shuffled.correct], "B");
+});
+
+Deno.test("remapChoiceLetters: known permutation remaps (A)..(D)", () => {
+  // Display order: authored D, A, B, C → authored A is shown as B, D as A
+  const order = [3, 0, 1, 2];
+  assertEquals(
+    remapChoiceLetters("(A) is wrong. (B) too. (C) also. (D) is right.", order),
+    "(B) is wrong. (C) too. (D) also. (A) is right.",
+  );
+});
+
+Deno.test("remapChoiceLetters: swap A<->D does not double-remap", () => {
+  // Authored A shown at D, authored D shown at A (B, C stay)
+  const order = [3, 1, 2, 0];
+  assertEquals(
+    remapChoiceLetters("(A) loses; (D) wins; (A)/(D) compared.", order),
+    "(D) loses; (A) wins; (D)/(A) compared.",
+  );
+});
+
+Deno.test("remapChoiceLetters: keyword forms remap, other text is left alone", () => {
+  const order = [3, 1, 2, 0];
+  assertEquals(
+    remapChoiceLetters("Option A beats answer D; choice B stays.", order),
+    "Option D beats answer A; choice B stays.",
+  );
+  const untouched =
+    "A coordinator runs (a) and (b). Plan A works. (E) is out of range. " +
+    "Agent A and step (1) stay. ABC (AB) [A] {D}";
+  assertEquals(remapChoiceLetters(untouched, order), untouched);
+});
+
+Deno.test("remapChoiceLetters: identity order is a no-op", () => {
+  const text = "(A) no. (B) yes. (C) no. (D) no.";
+  assertEquals(remapChoiceLetters(text, [0, 1, 2, 3]), text);
+});
+
+Deno.test("shuffleQuestionChoices: explain letters follow the shuffle", () => {
+  const q0: Question = {
+    text: "Q?",
+    choices: ["a0", "b1", "c2", "d3"],
+    correct: 3,
+    explain: "(A) is bad. (B) is bad. (C) is bad. (D) is right.",
+  };
+  const shuffled = shuffleQuestionChoices(q0, () => 0);
+  const order = choiceOrder(q0.choices, shuffled.choices)!;
+  // Each cited letter now names the same choice text as authored
+  for (let authored = 0; authored < 4; authored++) {
+    const shown = order.indexOf(authored);
+    const letter = "ABCD"[shown]!;
+    const sentence = ["(A) is bad", "(B) is bad", "(C) is bad", "(D) is right"][authored]!
+      .replace(/\([A-D]\)/, `(${letter})`);
+    assertEquals(shuffled.explain.includes(sentence), true, sentence);
+  }
+  assertEquals("ABCD"[shuffled.correct], shuffled.explain.match(/\(([A-D])\) is right/)![1]);
+  assertEquals(q0.explain, "(A) is bad. (B) is bad. (C) is bad. (D) is right.");
+});
+
+Deno.test("choiceOrder: maps display to authored, handles duplicates and mismatch", () => {
+  assertEquals(choiceOrder(["a", "b", "c"], ["c", "a", "b"]), [2, 0, 1]);
+  assertEquals(choiceOrder(["x", "x", "y"], ["y", "x", "x"]), [2, 0, 1]);
+  assertEquals(choiceOrder(["a", "b"], ["a", "z"]), null);
+  assertEquals(choiceOrder(["a", "b"], ["a"]), null);
 });
 
 Deno.test("shuffleQuestionChoices: default RNG can change order", () => {

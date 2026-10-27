@@ -1,5 +1,9 @@
 import type { MetadataFilter, Question, Quiz } from "./quiz.ts";
-import { filterQuestionsByMetadata } from "./quiz.ts";
+import {
+  choiceOrder,
+  filterQuestionsByMetadata,
+  remapChoiceLetters,
+} from "./quiz.ts";
 import { Session, type Phase } from "./session.ts";
 
 export const SNAPSHOT_VERSION = 2 as const;
@@ -148,14 +152,17 @@ export function sessionFromSnapshot(
     };
   });
   // Restore play choice order from snapshot; attach metadata + countdown from bank.
+  // Explain is re-derived from the bank text + snapshot order so choice letters
+  // match the display order (also fixes snapshots saved before letter remap).
   const effectiveQuestions: Question[] = snapshot.effectiveQuestions.map(
     (q, i) => {
       const bankQ = expected[i]!;
+      const order = choiceOrder(bankQ.choices, q.choices);
       const out: Question = {
         text: q.text,
         choices: [...q.choices],
         correct: q.correct,
-        explain: q.explain,
+        explain: order ? remapChoiceLetters(bankQ.explain, order) : q.explain,
       };
       if (bankQ.countdownSeconds !== undefined) {
         out.countdownSeconds = bankQ.countdownSeconds;

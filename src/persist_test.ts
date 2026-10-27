@@ -145,6 +145,37 @@ Deno.test("sessionToSnapshot / sessionFromSnapshot round-trip", async () => {
   assertEquals(restored.advance(), "EXPLAIN");
 });
 
+Deno.test("sessionFromSnapshot re-derives explain letters from bank (no double remap)", async () => {
+  const quiz: Quiz = {
+    title: "Letters",
+    questions: [{
+      text: "Q?",
+      choices: ["a0", "b1", "c2"],
+      correct: 2,
+      explain: "(A) no. (B) no. (C) yes.",
+    }],
+  };
+  // alwaysZero on 3 choices → display order [b1, c2, a0]
+  const session = new Session(quiz, { randomInt: alwaysZero });
+  const live = session.getEffectiveQuestions()[0]!;
+  assertEquals(live.choices, ["b1", "c2", "a0"]);
+  assertEquals(live.explain, "(C) no. (A) no. (B) yes.");
+
+  const fp = await quizFingerprint(quiz);
+  const snap = sessionToSnapshot(session, fp);
+  // Restoring an already-remapped snapshot keeps the same letters
+  assertEquals(
+    sessionFromSnapshot(quiz, snap).getEffectiveQuestions()[0]!.explain,
+    "(C) no. (A) no. (B) yes.",
+  );
+  // Legacy snapshot that stored the authored (unmapped) text is fixed on load
+  snap.effectiveQuestions[0]!.explain = "(A) no. (B) no. (C) yes.";
+  assertEquals(
+    sessionFromSnapshot(quiz, snap).getEffectiveQuestions()[0]!.explain,
+    "(C) no. (A) no. (B) yes.",
+  );
+});
+
 Deno.test("toHydrate / fromHydrate preserves maps and effective order", () => {
   const session = new Session(sampleQuiz, { randomInt: alwaysZero });
   const { id } = session.join("Bob");
