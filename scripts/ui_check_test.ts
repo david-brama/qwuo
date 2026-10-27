@@ -9,7 +9,7 @@ import { findBrowser } from "./ui_check.ts";
 const skip = Deno.env.get("SKIP_UI_CHECK") === "1" || findBrowser() === null;
 
 Deno.test({
-  name: "projector fits without scrolling at 1024x768 … 1920x1080; QR decodes",
+  name: "projector fits at 1024x768 … 1920x1080, QR decodes; phone fits at 375x667",
   ignore: skip,
   sanitizeOps: false,
   sanitizeResources: false,
@@ -17,7 +17,7 @@ Deno.test({
     const { runUiCheck, formatStats } = await import("./ui_check.ts");
     const longest = Number(Deno.env.get("UI_CHECK_LONGEST") || "") || 6;
     const res = await runUiCheck({ longest, log: () => {} });
-    console.log(formatStats(res.stats));
+    console.log(formatStats(res.stats, res.phone));
     assertEquals(res.failures, []);
   },
 });

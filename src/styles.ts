@@ -1152,13 +1152,13 @@ body {
   box-sizing: border-box;
 }
 
-/* Top bar: brand/title left, optional logo top-right */
+/* Top bar: one compact line, title left, optional logo right */
 .player-top {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 0.75rem 1rem;
-  margin-bottom: 1.5rem;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
   flex-shrink: 0;
 }
 
@@ -1170,8 +1170,8 @@ body {
 .player-top .brand-logo {
   position: static;
   flex-shrink: 0;
-  align-self: flex-start;
-  max-height: 32px;
+  align-self: center;
+  max-height: 22px;
   max-width: min(140px, 42vw);
   width: auto;
   height: auto;
@@ -1180,20 +1180,23 @@ body {
   user-select: none;
 }
 
+/* "Live Training" label: kept for screen readers, hidden to save space */
 .brand {
-  font-size: 0.8rem;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--muted);
-  font-weight: 700;
-  margin-bottom: 0.5rem;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 
 .title {
-  font-size: 1.15rem;
+  font-size: 0.95rem;
   font-weight: 600;
   color: var(--muted);
-  margin-bottom: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .card {
@@ -1277,33 +1280,84 @@ input[type="text"]:focus { border-color: var(--accent); }
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0.75rem 0;
-  margin-bottom: 1rem;
+  gap: 0.75rem;
+  padding: 0 0 0.45rem;
+  margin-bottom: 0.6rem;
   border-bottom: 1px solid var(--border);
   font-size: 0.95rem;
+}
+.player-bar > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.player-bar .score { flex-shrink: 0; }
+
+/* "Question N of M" with the countdown pill on the right */
+.q-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.4rem;
+  min-height: 2rem;
 }
 
 .q-meta {
   font-size: 0.85rem;
   color: var(--muted);
   font-weight: 600;
-  margin-bottom: 0.5rem;
 }
 
-/* Player QUESTION countdown */
+/* Player countdown: pill with large seconds; amber at 10 s, red at 5 s */
 .card .countdown {
-  display: inline-block;
-  min-width: 2.75rem;
-  margin: 0 0 0.75rem;
-  font-size: 1.5rem;
-  padding: 0.25rem 0.65rem;
+  flex-shrink: 0;
+  align-self: center;
+  min-width: 3.6rem;
+  padding: 0.15rem 0.7rem;
+  border-radius: 999px;
+  border: 2px solid var(--correct);
+  background: var(--surface);
+  color: #fff;
+  font-size: 1.25rem;
+  font-weight: 800;
+  line-height: 1.3;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
+.card .countdown.warn { border-color: #f59e0b; color: #fde68a; }
+.card .countdown.urgent {
+  border-color: var(--incorrect);
+  background: var(--incorrect-bg);
+  color: #fecaca;
+}
+.card .countdown[hidden] { display: none; }
+#fb-countdown { margin-bottom: 0.5rem; }
+
+.time-bar {
+  flex-shrink: 0;
+  height: 4px;
+  margin-bottom: 0.75rem;
+  border-radius: 2px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.time-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--correct);
+  transition: width 0.25s linear;
+}
+.time-bar.warn > span { background: #f59e0b; }
+.time-bar.urgent > span { background: var(--incorrect); }
+.time-bar[hidden] { display: none; }
 
 .q-text {
-  font-size: 1.35rem;
+  font-size: 1.2rem;
   font-weight: 600;
   line-height: 1.35;
-  margin-bottom: 1.25rem;
+  margin-bottom: 1rem;
 }
 
 .q-text p { margin: 0 0 0.55em; }
@@ -1329,7 +1383,45 @@ input[type="text"]:focus { border-color: var(--accent); }
 
 .choices .choice {
   font-size: 1.05rem;
-  padding: 1rem;
+  padding: 0.85rem 1rem;
+}
+.choice-letter { font-weight: 800; }
+/* Touch screens keep :hover after a tap; it looked like a selected choice */
+@media (hover: none) {
+  .choice:hover:not(:disabled) {
+    border-color: var(--border);
+    background: var(--surface);
+  }
+}
+
+/*
+ * Small phones (iPhone SE: 375x667): tighter type and spacing so a typical
+ * question and all of its choices fit without scrolling. The footer note is
+ * dropped; it adds nothing during play.
+ */
+@media (max-height: 760px) {
+  .shell {
+    padding: 0.7rem 0.75rem;
+    padding-bottom: max(0.7rem, env(safe-area-inset-bottom));
+  }
+  .player-top { margin-bottom: 0.5rem; }
+  .player-bar { font-size: 0.875rem; padding-bottom: 0.35rem; margin-bottom: 0.4rem; }
+  .q-head { margin-bottom: 0.3rem; }
+  .time-bar { margin-bottom: 0.5rem; }
+  .q-text {
+    font-size: 0.95rem;
+    line-height: 1.3;
+    margin-bottom: 0.6rem;
+  }
+  .q-text p { margin-bottom: 0.35em; }
+  .choices .choice {
+    font-size: 0.875rem;
+    line-height: 1.3;
+    padding: 0.45rem 0.65rem;
+    margin-bottom: 0.4rem;
+    border-width: 1.5px;
+  }
+  .footer-note { display: none; }
 }
 
 .feedback {

@@ -58,8 +58,11 @@ export function playerHtml(logoHtml = ""): string {
           <span id="q-name"></span>
           <span class="score">Score: <span id="q-score">0</span></span>
         </div>
-        <div class="q-meta" id="q-meta"></div>
-        <div class="countdown" id="q-countdown" hidden aria-live="polite" aria-atomic="true"></div>
+        <div class="q-head">
+          <div class="q-meta" id="q-meta"></div>
+          <div class="countdown" id="q-countdown" hidden aria-live="polite" aria-atomic="true"></div>
+        </div>
+        <div class="time-bar" id="q-timebar" hidden><span></span></div>
         <div class="q-text" id="q-text"></div>
         <div class="choices" id="q-choices"></div>
       </div>
@@ -183,14 +186,26 @@ export function playerHtml(logoHtml = ""): string {
         if (!c || c.deadlineMs == null) {
           el.hidden = true;
           el.textContent = "";
-          el.classList.remove("urgent");
+          el.classList.remove("warn", "urgent");
           continue;
         }
         const sec = remainingSeconds(c.deadlineMs);
         el.hidden = false;
         el.textContent = sec + "s";
+        // Amber at 10 s, red at 5 s (as on the projector)
+        el.classList.toggle("warn", sec <= 10 && sec > 5);
         el.classList.toggle("urgent", sec <= 5);
         el.setAttribute("aria-label", sec + " seconds remaining");
+      }
+      const bar = document.getElementById("q-timebar");
+      bar.hidden = !c || c.deadlineMs == null || !c.totalSeconds;
+      if (!bar.hidden) {
+        const left = Math.max(0, (c.deadlineMs - Date.now()) / 1000);
+        const sec = Math.ceil(left);
+        bar.firstElementChild.style.width =
+          Math.min(100, (100 * left) / c.totalSeconds).toFixed(1) + "%";
+        bar.classList.toggle("warn", sec <= 10 && sec > 5);
+        bar.classList.toggle("urgent", sec <= 5);
       }
     }
 

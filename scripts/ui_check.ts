@@ -1,10 +1,12 @@
 /// <reference lib="dom" />
 /**
- * Projector layout check: starts the app on free ports with a temp session
- * dir, drives it through LOBBY → QUESTION → CORRECT → EXPLAIN → LEADERBOARD
- * → END in headless Chrome at four projector sizes (plus a 375x667 phone)
- * and fails on scroll overflow, clipped/overlapped content or a QR that
- * does not decode.
+ * Projector and phone layout check: starts the app on free ports with a
+ * temp session dir, drives it through LOBBY → QUESTION → CORRECT → EXPLAIN
+ * → LEADERBOARD → END in headless Chrome at four projector sizes and a
+ * 375x667 phone, and fails on scroll overflow, clipped/overlapped content,
+ * a QR that does not decode, or a phone question whose choices do not fit
+ * (all of them for typical-length questions, at least two for the rest).
+ * The phone also gets slow-press, offline, no-early-reveal and reload checks.
  *
  *   deno task test:ui                      # every question in quiz.json
  *   UI_CHECK_LONGEST=8 deno task test:ui   # 8 longest + a sample
@@ -536,6 +538,51 @@ async function checkReconnectBanner(
 }
 
 // --------------------------------------------------------------------------
+// Phone question layout at 375x667: how many choices are fully on screen
+// with the card scrolled to the top, plus font sizes and the countdown
+
+/** Phone font floors (px). */
+const PHONE_FLOORS = { q: 15, choice: 14 };
+
+export interface PhoneMeasure {
+  choices: number;
+  visible: number;
+  qFont: number;
+  choiceFont: number;
+  countdownInView: boolean;
+  overflowX: boolean;
+}
+
+function measurePhoneInPage(): PhoneMeasure {
+  const card = document.querySelector(".card") as HTMLElement;
+  card.scrollTop = 0;
+  const limit = Math.min(innerHeight, card.getBoundingClientRect().bottom) + 0.5;
+  const btns = [...document.querySelectorAll("#q-choices .choice")];
+  const cd = document.getElementById("q-countdown")!;
+  const r = cd.getBoundingClientRect();
+  const px = (el: Element | null) => el ? parseFloat(getComputedStyle(el).fontSize) : 0;
+  return {
+    choices: btns.length,
+    visible: btns.filter((b) => b.getBoundingClientRect().bottom <= limit).length,
+    qFont: px(document.querySelector("#q-text p") ?? document.getElementById("q-text")),
+    choiceFont: px(btns[0] ?? null),
+    countdownInView: !cd.hidden && r.height > 0 && r.top >= 0 && r.bottom <= innerHeight,
+    overflowX: document.documentElement.scrollWidth > innerWidth,
+  };
+}
+
+export interface PhoneStats {
+  checks: number;
+  /** Questions at or under the typical (median) length, and how many fit. */
+  typical: number;
+  typicalAllVisible: number;
+  allVisible: number;
+  minVisible: number;
+  minQFont: number;
+  minChoiceFont: number;
+}
+
+// --------------------------------------------------------------------------
 // Phone: slow (400 ms) presses on a choice must all register even though the
 // state poll runs every second. Answers are stubbed to fail so the question
 // stays on screen; every registered press is one /api/answer request.
@@ -762,6 +809,7 @@ export interface ViewportStats {
 export interface UiCheckResult {
   failures: string[];
   stats: ViewportStats[];
+  phone: PhoneStats;
   questions: number;
 }
 
@@ -795,8 +843,21 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
     0,
   );
 
+  // "Typical" question for the phone: at or under the bank's median length
+  const lens = quiz.questions.map(slideLen).sort((a, b) => a - b);
+  const typicalLen = lens[Math.floor((lens.length - 1) / 2)];
+
   const failures: string[] = [];
   const stats = new Map<string, ViewportStats>();
+  const phoneStats: PhoneStats = {
+    checks: 0,
+    typical: 0,
+    typicalAllVisible: 0,
+    allVisible: 0,
+    minVisible: Infinity,
+    minQFont: Infinity,
+    minChoiceFont: Infinity,
+  };
   let app: App | null = null;
   let browser: Browser | null = null;
   try {
@@ -964,10 +1025,37 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
       const nm = (phase: string) =>
         want ? `${phase}-q${String(picked[src] + 1).padStart(2, "0")}` : null;
       await check("question", `${tag} QUESTION`, nm("question"));
-      if (want) {
-        await phone.waitForSelector("#view-question.active");
-        await shot(phone, `player-${nm("question")}-${phoneVp}`);
+      await phone.waitForFunction(
+        (n) => document.getElementById("view-question")!.classList.contains("active") &&
+          document.getElementById("q-meta")!.textContent!.startsWith(`Question ${n} of`),
+        qi + 1,
+        { timeout: 5000 },
+      ).catch(() => failures.push(`${phoneVp} ${tag}: phone did not show the question`));
+      {
+        const pm = await phone.evaluate(measurePhoneInPage);
+        const typical = slideLen(subset.questions[src]) <= typicalLen;
+        const ps = phoneStats;
+        ps.checks++;
+        ps.minVisible = Math.min(ps.minVisible, pm.visible);
+        ps.minQFont = Math.min(ps.minQFont, pm.qFont);
+        ps.minChoiceFont = Math.min(ps.minChoiceFont, pm.choiceFont);
+        if (pm.visible === pm.choices) ps.allVisible++;
+        if (typical) {
+          ps.typical++;
+          if (pm.visible === pm.choices) ps.typicalAllVisible++;
+        }
+        const need = typical ? pm.choices : Math.min(2, pm.choices);
+        if (pm.visible < need) {
+          failures.push(`${phoneVp} ${tag}: ${pm.visible}/${pm.choices} choices visible without scrolling, want ${need}${typical ? " (typical length)" : ""}`);
+        }
+        if (pm.qFont < PHONE_FLOORS.q) failures.push(`${phoneVp} ${tag}: question font ${pm.qFont}px < ${PHONE_FLOORS.q}px`);
+        if (pm.choiceFont < PHONE_FLOORS.choice) {
+          failures.push(`${phoneVp} ${tag}: choice font ${pm.choiceFont}px < ${PHONE_FLOORS.choice}px`);
+        }
+        if (hasCountdown && !pm.countdownInView) failures.push(`${phoneVp} ${tag}: countdown not on screen`);
+        if (pm.overflowX) failures.push(`${phoneVp} ${tag}: horizontal overflow`);
       }
+      if (want) await shot(phone, `player-${nm("question")}-${phoneVp}`);
       // The phone answers Q1 itself (first choice) after the slow presses
       let phoneChoice: number | null = null;
       if (qi === 0) {
@@ -1023,13 +1111,22 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
       }
       await goTo(app, "EXPLAIN", qi);
       await check("explain", `${tag} EXPLAIN`, nm("explain"));
-      if (want) await shot(phone, `player-${nm("explain")}-${phoneVp}`);
+      if (want) {
+        await phone.waitForSelector("#view-wait.active, #view-feedback.active", { timeout: 5000 })
+          .catch(() => failures.push(`${phoneVp} ${tag} EXPLAIN: phone still on the question`));
+        await shot(phone, `player-${nm("explain")}-${phoneVp}`);
+      }
       await goTo(app, "LEADERBOARD", qi);
       await check("leaderboard", `${tag} LEADERBOARD`, nm("leaderboard"));
       log(`  ${tag} checked (${failures.length} failures so far)`);
     }
     await goTo(app, "END");
     await check("end", "END", "end");
+    await phone.waitForFunction(
+      () => document.getElementById("wait-msg")?.textContent === "Session complete",
+      undefined,
+      { timeout: 5000 },
+    ).catch(() => failures.push(`${phoneVp} END: phone does not show "Session complete"`));
     await shot(phone, `player-end-${phoneVp}`);
     for (const f of await checkPresenterKeys(app, pages[0].page)) {
       failures.push(`${pages[0].vp} keys: ${f}`);
@@ -1053,18 +1150,30 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
   return {
     failures,
     stats: [...stats.values()],
+    phone: phoneStats,
     questions: picked.length,
   };
 }
 
-export function formatStats(stats: ViewportStats[]): string {
+export function formatStats(stats: ViewportStats[], phone?: PhoneStats): string {
   const f = (n: number) => Number.isFinite(n) ? n.toFixed(1) : "—";
-  return stats.map((s) =>
+  const lines = stats.map((s) =>
     `${s.viewport.padEnd(10)} checks=${s.checks} minQuestion=${f(s.minQFont)}px ` +
     `minChoice=${f(s.minChoiceFont)}px minExplain=${f(s.minExplainFont)}px ` +
     `minExplainChoice=${f(s.minRecapFont)}px ` +
     `qr=${s.qrSide}px decoded=${s.qrDecoded}`
-  ).join("\n");
+  );
+  if (phone) {
+    const [w, h] = PHONE_VIEWPORT;
+    lines.push(
+      `${`${w}x${h}`.padEnd(10)} questions=${phone.checks} ` +
+        `allChoicesVisible=${phone.allVisible}/${phone.checks} ` +
+        `typical=${phone.typicalAllVisible}/${phone.typical} ` +
+        `minVisible=${Number.isFinite(phone.minVisible) ? phone.minVisible : "—"} ` +
+        `minQuestion=${f(phone.minQFont)}px minChoice=${f(phone.minChoiceFont)}px`,
+    );
+  }
+  return lines.join("\n");
 }
 
 if (import.meta.main) {
@@ -1079,7 +1188,7 @@ if (import.meta.main) {
     shotsAll: Deno.env.get("SHOTS_ALL") === "1",
   });
   console.log(`\nQuestions checked: ${res.questions}`);
-  console.log(formatStats(res.stats));
+  console.log(formatStats(res.stats, res.phone));
   if (res.failures.length) {
     const max = 80;
     console.log(`\nFAIL: ${res.failures.length} problem(s)`);
