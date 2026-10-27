@@ -521,6 +521,40 @@ body {
   background: var(--correct);
   color: #fff;
 }
+.choices .choice.highlight {
+  border-width: 0.16em;
+  font-weight: 800;
+  box-shadow: none;
+}
+.choices .choice:not(.highlight) .choice-text { color: #c3cedc; }
+.choice-mark {
+  flex: 0 0 auto;
+  font-size: 1.25em;
+  font-weight: 900;
+  line-height: 1;
+  color: var(--correct);
+}
+
+/* EXPLAIN: question + choices condensed above the explanation */
+.q-text.q-recap {
+  font-size: calc(clamp(16px, min(2.9vh, 1.8vw), 36px) * var(--fit) * var(--q-scale));
+  font-weight: 500;
+  color: #c3cedc;
+  margin-bottom: 0.45em;
+}
+.q-recap strong { color: var(--text); }
+.choices.choices-recap {
+  gap: calc(clamp(3px, 0.7vh, 8px) * var(--fit));
+  margin-bottom: calc(clamp(8px, 1.6vh, 20px) * var(--fit));
+}
+.choices.choices-recap .choice {
+  font-size: calc(clamp(14px, min(2.5vh, 1.6vw), 30px) * var(--fit) * var(--q-scale));
+  padding: 0.22em 0.6em;
+  line-height: 1.22;
+}
+.explain-slide .explain-box {
+  font-size: calc(clamp(18px, min(3.6vh, 2.2vw), 46px) * var(--fit) * var(--q-scale));
+}
 
 .explain-box {
   font-size: calc(clamp(22px, min(5.2vh, 3.1vw), 64px) * var(--fit) * var(--q-scale));

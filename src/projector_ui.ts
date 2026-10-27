@@ -270,10 +270,14 @@ export function projectorHtml(
         .replace(/"/g, "&quot;");
     }
 
+    /** Correct choice: ✓ mark, bold text and a thick outline — not colour only. */
     function renderChoices(choices, highlightIndex) {
       return choices.map((c, i) => {
-        const cls = highlightIndex === i ? "choice highlight" : "choice";
-        return \`<div class="\${cls}"><span class="choice-letter">\${LETTERS[i] || i + 1}</span><span class="choice-text">\${esc(c)}</span></div>\`;
+        const hi = highlightIndex === i;
+        const mark = hi
+          ? '<span class="choice-mark" aria-label="Correct answer">✓</span>'
+          : "";
+        return \`<div class="choice\${hi ? " highlight" : ""}"><span class="choice-letter">\${LETTERS[i] || i + 1}</span><span class="choice-text">\${esc(c)}</span>\${mark}</div>\`;
       }).join("");
     }
 
@@ -717,8 +721,11 @@ export function projectorHtml(
       }
 
       if (state.phase === "EXPLAIN") {
+        // Question and choices condensed so the explanation keeps the space
         return \`
-          <div class="slide-content">
+          <div class="slide-content explain-slide">
+            <div class="q-text q-recap">\${md(q.text)}</div>
+            <div class="choices choices-recap">\${renderChoices(q.choices, q.correct)}</div>
             <div class="explain-box">\${md(q.explain || "No explanation")}</div>
           </div>
         \`;

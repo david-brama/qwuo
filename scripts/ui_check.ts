@@ -26,10 +26,17 @@ export const PHONE_VIEWPORT: [number, number] = [375, 667];
 /** Font floors (px) the check enforces; 1080p carries the room target. */
 const FONT_FLOORS: Record<
   string,
-  { q: number; choice: number; lb: number; timer: number }
+  {
+    q: number;
+    choice: number;
+    lb: number;
+    timer: number;
+    explain: number;
+    recap: number;
+  }
 > = {
-  "1920x1080": { q: 40, choice: 30, lb: 40, timer: 44 },
-  default: { q: 24, choice: 20, lb: 22, timer: 28 },
+  "1920x1080": { q: 40, choice: 30, lb: 40, timer: 44, explain: 30, recap: 22 },
+  default: { q: 24, choice: 20, lb: 22, timer: 28, explain: 18, recap: 14 },
 };
 
 const PUBLIC_URL = "https://quiet-harbor-example-lantern.trycloudflare.com";
@@ -250,6 +257,10 @@ export interface Measure {
   podium: number;
   /** "X of N" answered counter text, when shown. */
   answered: string | null;
+  /** EXPLAIN recap: choice font, highlighted+✓ choices, question shown. */
+  recapFont: number | null;
+  correctMarks: number;
+  recapQuestion: number;
   /** Countdown seconds font (px) when the countdown is shown. */
   countdownFont: number | null;
   qrBox: { x: number; y: number; width: number; height: number } | null;
@@ -406,8 +417,12 @@ function measureInPage(): Measure {
   };
   return {
     issues,
-    qFont: font("#main .q-text"),
-    choiceFont: font("#main .choices .choice"),
+    qFont: font("#main .q-text:not(.q-recap)"),
+    choiceFont: font("#main .choices:not(.choices-recap) .choice"),
+    recapFont: font("#main .choices-recap .choice"),
+    correctMarks: [...document.querySelectorAll("#main .choice.highlight")]
+      .filter((el) => el.querySelector(".choice-mark") && visible(el)).length,
+    recapQuestion: [...document.querySelectorAll("#main .q-recap")].filter(visible).length,
     explainFont: font("#main .explain-box"),
     lbRows: [...document.querySelectorAll("#main .lb-row")].filter(visible).length,
     lbFont: font("#main .leaderboard:not(.lb-rest) .lb-row"),
@@ -439,6 +454,7 @@ export interface ViewportStats {
   minQFont: number;
   minChoiceFont: number;
   minExplainFont: number;
+  minRecapFont: number;
   qrSide: number;
   qrDecoded: boolean;
   checks: number;
@@ -500,6 +516,7 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
         minQFont: Infinity,
         minChoiceFont: Infinity,
         minExplainFont: Infinity,
+        minRecapFont: Infinity,
         qrSide: 0,
         qrDecoded: false,
         checks: 0,
@@ -578,6 +595,20 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
             Number(m2[2]) > joined
           ) {
             failures.push(`${vp} ${label}: answered counter "${m.answered}", want ${wantX} of ${Math.max(1, wantX)}…${joined}`);
+          }
+        }
+        if (tag === "correct" && m.correctMarks !== 1) {
+          failures.push(`${vp} ${label}: ${m.correctMarks} choices marked ✓ correct, want 1`);
+        }
+        if (tag === "explain") {
+          if (m.recapQuestion !== 1) failures.push(`${vp} ${label}: question not shown above the explanation`);
+          if (m.correctMarks !== 1) failures.push(`${vp} ${label}: ${m.correctMarks} choices marked ✓ correct, want 1`);
+          if (m.explainFont !== null && m.explainFont < floor.explain) {
+            failures.push(`${vp} ${label}: explanation font ${m.explainFont}px < ${floor.explain}px`);
+          }
+          if (m.recapFont !== null) s.minRecapFont = Math.min(s.minRecapFont, m.recapFont);
+          if (m.recapFont !== null && m.recapFont < floor.recap) {
+            failures.push(`${vp} ${label}: choice font ${m.recapFont}px < ${floor.recap}px`);
           }
         }
         if (tag === "leaderboard") {
@@ -680,6 +711,7 @@ export function formatStats(stats: ViewportStats[]): string {
   return stats.map((s) =>
     `${s.viewport.padEnd(10)} checks=${s.checks} minQuestion=${f(s.minQFont)}px ` +
     `minChoice=${f(s.minChoiceFont)}px minExplain=${f(s.minExplainFont)}px ` +
+    `minExplainChoice=${f(s.minRecapFont)}px ` +
     `qr=${s.qrSide}px decoded=${s.qrDecoded}`
   ).join("\n");
 }
