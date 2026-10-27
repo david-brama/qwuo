@@ -6,7 +6,9 @@ import type { Quiz } from "./quiz.ts";
 import {
   engagementWindowIndices,
   isActiveParticipant,
+  legacyRevealedThrough,
   Session,
+  SessionError,
 } from "./session.ts";
 
 function delay(ms: number): Promise<void> {
@@ -305,7 +307,7 @@ Deno.test("runtime filter rejected outside LOBBY", () => {
   assertEquals(session.questionCount, 3);
 });
 
-Deno.test("reset clears runtime filters and keeps participants/scores", () => {
+Deno.test("reset clears runtime filters, keeps participants, zeroes scores", () => {
   const session = new Session(filterBankQuiz, { randomInt: alwaysZero });
   session.applyRuntimeFilters([{ key: "domain", value: "A" }]);
   assertEquals(session.questionCount, 2);
@@ -316,7 +318,7 @@ Deno.test("reset clears runtime filters and keeps participants/scores", () => {
   session.reset();
   assertEquals(session.phase, "LOBBY");
   assertEquals(session.participantCount(), 1);
-  assertEquals(session.getParticipant(id)?.score, 1);
+  assertEquals(session.getParticipant(id)?.score, 0);
   assertEquals(session.hasAnswered(id, 0), false);
   assertEquals(session.questionCount, 3);
   assertEquals(session.getRuntimeFilters(), []);
@@ -463,7 +465,7 @@ Deno.test("host advance cancels countdown timer", async () => {
   assertEquals(hookCalls, 0);
 });
 
-Deno.test("back into QUESTION restarts full countdown", () => {
+Deno.test("back from CORRECT into QUESTION does not restart countdown", () => {
   const quiz: Quiz = {
     title: "T",
     config: { slideMetadataKeys: [], countdownSeconds: 30 },
@@ -473,14 +475,127 @@ Deno.test("back into QUESTION restarts full countdown", () => {
   };
   const session = new Session(quiz, { randomInt: alwaysZero });
   session.advance();
-  const first = session.getQuestionDeadlineMs()!;
+  assertEquals(session.getQuestionDeadlineMs() !== null, true);
   session.advance(); // CORRECT
   assertEquals(session.projectorState().countdown, null);
-  session.back(); // QUESTION again
-  const second = session.getQuestionDeadlineMs()!;
+  session.back(); // QUESTION again, read-only
   assertEquals(session.phase, "QUESTION");
+  assertEquals(session.getQuestionDeadlineMs(), null);
+  assertEquals(session.projectorState().countdown, null);
+  assertEquals(session.playerState().countdown, null);
+  assertEquals(session.projectorState().answersLocked, true);
+  assertEquals(session.playerState().answersLocked, true);
+});
+
+Deno.test("re-entering an unrevealed QUESTION restarts full countdown", () => {
+  const quiz: Quiz = {
+    title: "T",
+    config: { slideMetadataKeys: [], countdownSeconds: 30 },
+    questions: [
+      { text: "Q1?", choices: ["A", "B"], correct: 0, explain: "" },
+      { text: "Q2?", choices: ["A", "B"], correct: 0, explain: "" },
+    ],
+  };
+  const session = new Session(quiz, { randomInt: alwaysZero });
+  session.advance(); // Q0
+  session.advance(); // CORRECT
+  session.advance(); // EXPLAIN
+  session.advance(); // LEADERBOARD
+  session.advance(); // Q1 (not revealed)
+  const first = session.getQuestionDeadlineMs()!;
+  session.back(); // LEADERBOARD Q0
+  session.advance(); // Q1 again
+  assertEquals(session.answersLocked, false);
   assertEquals(session.projectorState().countdown?.totalSeconds, 30);
-  assertEquals(second >= first, true);
+  assertEquals(session.getQuestionDeadlineMs()! >= first, true);
+});
+
+Deno.test("answers are rejected after Back from CORRECT (no late scoring)", () => {
+  const session = new Session(sampleQuiz, { randomInt: alwaysZero });
+  const early = session.join("Early");
+  const late = session.join("Late");
+  session.advance(); // QUESTION
+  const correct = session.projectorState().question!.correct;
+  session.answer(early.id, correct);
+  session.advance(); // CORRECT — answer revealed
+  session.back(); // QUESTION, locked
+  assertEquals(session.phase, "QUESTION");
+  let err: unknown;
+  try {
+    session.answer(late.id, correct);
+  } catch (e) {
+    err = e;
+  }
+  assertEquals(err instanceof SessionError, true);
+  assertEquals((err as SessionError).status, 409);
+  assertEquals((err as SessionError).message.includes("closed"), true);
+  assertEquals(session.getParticipant(late.id)?.score, 0);
+  assertEquals(session.hasAnswered(late.id), false);
+  assertEquals(session.getParticipant(early.id)?.score, 1);
+
+  // Next goes to CORRECT again; going back through the phases keeps it locked
+  assertEquals(session.advance(), "CORRECT");
+  session.advance(); // EXPLAIN
+  session.back(); // CORRECT
+  session.back(); // QUESTION
+  assertEquals(session.answersLocked, true);
+  // Back to LOBBY and in again: still locked (answer was shown)
+  session.back(); // LOBBY
+  session.advance(); // QUESTION 0
+  assertEquals(session.answersLocked, true);
+});
+
+Deno.test("countdown expiry also locks the question for Back", async () => {
+  const quiz: Quiz = {
+    title: "T",
+    config: { slideMetadataKeys: [], countdownSeconds: 1 },
+    questions: [
+      { text: "Q1?", choices: ["A", "B"], correct: 0, explain: "" },
+    ],
+  };
+  const session = new Session(quiz, { randomInt: alwaysZero });
+  const { id } = session.join("P");
+  session.advance();
+  await delay(1200);
+  assertEquals(session.phase, "CORRECT");
+  session.back();
+  assertEquals(session.answersLocked, true);
+  assertEquals(session.getQuestionDeadlineMs(), null);
+  let status = 0;
+  try {
+    session.answer(id, 0);
+  } catch (e) {
+    status = (e as SessionError).status;
+  }
+  assertEquals(status, 409);
+});
+
+Deno.test("reset zeroes scores so replaying a question cannot double-score", () => {
+  const session = new Session(sampleQuiz, { randomInt: alwaysZero });
+  const { id } = session.join("Pat");
+  session.advance(); // Q0
+  session.answer(id, session.projectorState().question!.correct);
+  session.advance(); // CORRECT
+  assertEquals(session.getParticipant(id)?.score, 1);
+
+  session.reset();
+  assertEquals(session.getParticipant(id)?.score, 0);
+  assertEquals(session.getRevealedThrough(), -1);
+  assertEquals(session.leaderboard()[0]!.score, 0);
+
+  session.advance(); // Q0 replay — open again
+  assertEquals(session.answersLocked, false);
+  session.answer(id, session.projectorState().question!.correct);
+  assertEquals(session.getParticipant(id)?.score, 1);
+});
+
+Deno.test("legacyRevealedThrough derives watermark from phase", () => {
+  assertEquals(legacyRevealedThrough("LOBBY", 0, 5), -1);
+  assertEquals(legacyRevealedThrough("QUESTION", 0, 5), -1);
+  assertEquals(legacyRevealedThrough("QUESTION", 3, 5), 2);
+  assertEquals(legacyRevealedThrough("CORRECT", 3, 5), 3);
+  assertEquals(legacyRevealedThrough("LEADERBOARD", 3, 5), 3);
+  assertEquals(legacyRevealedThrough("END", 4, 5), 4);
 });
 
 Deno.test("stale timeout does not advance later question", async () => {

@@ -127,8 +127,8 @@ PUBLIC_URL=https://YOUR-SUBDOMAIN.trycloudflare.com deno task start
 6. **Next** leaves LOBBY into the first QUESTION.
 7. During QUESTION, phones answer once; they see correct/incorrect immediately. You still control the room pace with Next/Back (unless a countdown expires).
 8. Flow: show correct → explanation → leaderboard → next question… → END.
-9. **Back** steps one phase backward (does not wipe scores; re-entering QUESTION **restarts** a full countdown if timed).
-10. **Reset** (soft): back to LOBBY, clear runtime filters and per-question answers, **keep** names and scores, **same** session URL/QR. Snapshot is updated, not deleted.
+9. **Back** steps one phase backward (does not wipe scores). Back from CORRECT shows the question again **read-only** ("Answers closed"): no timer, answers are rejected, Next reveals it again. Re-entering a question whose answer was **not** shown yet starts a full timer.
+10. **Reset** (soft): back to LOBBY, clear runtime filters and per-question answers, **keep** names, **zero** scores, **same** session URL/QR. Snapshot is updated, not deleted.
 
 Need a brand-new empty room (no roster)? Use `SESSION_FRESH=1` at boot (see [Configuration](#configuration)).
 
@@ -252,7 +252,7 @@ Timers are optional and only apply in the **QUESTION** phase.
 | `0` | Explicitly off (use on a question to opt out of a positive default) |
 | `> 0` | Server starts a deadline; UIs show remaining whole seconds |
 
-When the deadline hits, the session advances **QUESTION → CORRECT** with the same scoring as host **Next** (unanswered = 0). Host Next/Back still work anytime; **Back** into QUESTION starts a **new full** timer (does not resume leftover seconds).
+When the deadline hits, the session advances **QUESTION → CORRECT** with the same scoring as host **Next** (unanswered = 0). Host Next/Back still work anytime. **Back** from CORRECT does **not** restart the timer (the question is read-only once its answer was shown); re-entering a not-yet-revealed QUESTION starts a **new full** timer (does not resume leftover seconds).
 
 ---
 
@@ -328,7 +328,7 @@ SESSION_FRESH=1 deno task start
 # or start:tunnel with SESSION_FRESH=1
 ```
 
-**Soft Reset** (projector button): LOBBY + clear filters/answers; **keep** participants and scores; **same** UUID (QR stays valid). Does **not** delete the snapshot file — it saves the soft-reset state.
+**Soft Reset** (projector button): LOBBY + clear filters/answers; **keep** participants, **zero** their scores; **same** UUID (QR stays valid). Does **not** delete the snapshot file — it saves the soft-reset state.
 
 Snapshots are host-disk only (no cloud sync). Delete `.qwuo/` entries if you want a manual wipe.
 

@@ -466,3 +466,30 @@ Deno.test("player POST /api/filter rejected", async () => {
   );
   assertEquals(res.status, 403);
 });
+
+Deno.test("player answer after Back from CORRECT gets 409 with clear error", async () => {
+  const session = new Session(quiz);
+  const player = createPlayerHandler(session, SESSION_ID);
+  const projector = createProjectorHandler(session, config, SESSION_ID);
+  const { id } = session.join("Late");
+  for (const step of ["advance", "advance", "back"]) {
+    const r = await projector(new Request(api(`/api/${step}`), { method: "POST" }));
+    await r.body?.cancel();
+  }
+  const state = await (await projector(new Request(api("/api/state")))).json();
+  assertEquals(state.phase, "QUESTION");
+  assertEquals(state.answersLocked, true);
+  assertEquals(state.countdown, null);
+
+  const res = await player(
+    new Request(api("/api/answer"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id, choiceIndex: state.question.correct }),
+    }),
+  );
+  assertEquals(res.status, 409);
+  const body = await res.json();
+  assertEquals(String(body.error).includes("closed"), true);
+  assertEquals(session.getParticipant(id)?.score, 0);
+});

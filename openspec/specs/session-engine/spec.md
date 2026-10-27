@@ -163,11 +163,11 @@ The session MUST accept a mutating runtime filter apply only while phase is LOBB
 - **THEN** the apply is rejected and the playable set is unchanged
 
 ### Requirement: Reset returns to lobby and clears runtime filters
-Host reset MUST set phase to LOBBY and `questionIndex` to 0, clear runtime filters, and rebuild the playable list as the full process bank with a fresh choice shuffle. Reset MUST retain participants and their scores. Reset MUST clear per-question answer maps so answer indices remain consistent with the rebuilt playable set.
+Host reset MUST set phase to LOBBY and `questionIndex` to 0, clear runtime filters, and rebuild the playable list as the full process bank with a fresh choice shuffle. Reset MUST retain participants and MUST set every score to 0, so replaying a question cannot score twice. Reset MUST clear per-question answer maps so answer indices remain consistent with the rebuilt playable set.
 
 #### Scenario: Reset clears filters and keeps roster
 - **WHEN** runtime filters have reduced the bank to M playable questions, participants have joined and scored, and the host resets
-- **THEN** the session is in LOBBY, `activeFilters` is empty, `questionCount` equals the full bank size, participants remain with the same scores, and per-question answers are cleared
+- **THEN** the session is in LOBBY, `activeFilters` is empty, `questionCount` equals the full bank size, participants remain with scores of 0, and per-question answers are cleared
 
 ### Requirement: Runtime filters are durable
 After a successful runtime filter apply, durable session state MUST include enough information to restore the same active runtime filters and playable subset (including play-time choice order) on process restart with a matching quiz fingerprint. Snapshots that predate runtime filters (no filter field, effective list length equal to bank length) MUST continue to restore as a full-bank session with empty runtime filters when otherwise valid.
@@ -224,11 +224,18 @@ While the phase is QUESTION and an active countdown deadline has been reached, t
 - **THEN** the late timer MUST NOT change the current phase or question index
 
 ### Requirement: Re-entering QUESTION restarts countdown
-When the session enters QUESTION again (including host Back from CORRECT into QUESTION, or advancing from LEADERBOARD into the next QUESTION), the system SHALL recompute the effective duration and, if active, start a **new** full countdown from the time of entry (it MUST NOT resume a previous partial remaining time).
+When the session enters QUESTION for a question whose answer has not been revealed yet, the system SHALL recompute the effective duration and, if active, start a **new** full countdown from the time of entry (it MUST NOT resume a previous partial remaining time).
 
-#### Scenario: Back from CORRECT restarts full timer
-- **WHEN** the host moves from CORRECT back to QUESTION for a timed question with effective `30`
-- **THEN** a new countdown with `totalSeconds` `30` starts from the Back transition time
+#### Scenario: Re-entering an unrevealed question restarts full timer
+- **WHEN** the host goes Back from QUESTION N+1 to LEADERBOARD N and then Next into QUESTION N+1 again, with effective `30`
+- **THEN** a new countdown with `totalSeconds` `30` starts from the Next transition time
+
+### Requirement: Revealed questions are read-only
+Once a question has reached CORRECT (host Next or countdown expiry), re-entering QUESTION for that question (host Back from CORRECT, or later Back/Next paths) SHALL show it read-only: `answersLocked` is true in projector and player state, no countdown runs, and answer submissions MUST be rejected with status 409. Next from a locked QUESTION goes to CORRECT. The revealed watermark MUST survive restart; legacy snapshots derive it from phase and question index. Reset clears it.
+
+#### Scenario: Back from CORRECT does not reopen answering
+- **WHEN** the host moves from CORRECT back to QUESTION for a timed question
+- **THEN** countdown is null, `answersLocked` is true, and an answer from a player who had not answered is rejected with 409 and does not change scores
 
 #### Scenario: Next question gets its own effective duration
 - **WHEN** the session advances from LEADERBOARD into QUESTION for the next question

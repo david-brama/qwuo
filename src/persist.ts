@@ -44,6 +44,8 @@ export type SessionSnapshot = {
    * Omitted/null = no active deadline (or legacy snapshot).
    */
   questionDeadlineMs?: number | null;
+  /** Highest revealed question index; omitted in legacy snapshots. */
+  revealedThrough?: number;
 };
 
 const PHASES: ReadonlySet<string> = new Set([
@@ -121,6 +123,9 @@ export function sessionToSnapshot(
     ...(state.questionDeadlineMs != null
       ? { questionDeadlineMs: state.questionDeadlineMs }
       : {}),
+    ...(state.revealedThrough !== undefined
+      ? { revealedThrough: state.revealedThrough }
+      : {}),
   };
 }
 
@@ -181,6 +186,7 @@ export function sessionFromSnapshot(
     effectiveQuestions,
     runtimeFilters,
     questionDeadlineMs: snapshot.questionDeadlineMs ?? null,
+    revealedThrough: snapshot.revealedThrough,
   });
 }
 
@@ -221,6 +227,13 @@ export function isValidSnapshot(data: unknown): data is SessionSnapshot {
       if (typeof fr.key !== "string" || !fr.key.trim()) return false;
       if (typeof fr.value !== "string") return false;
     }
+  }
+  if (
+    o.revealedThrough !== undefined &&
+    (typeof o.revealedThrough !== "number" ||
+      !Number.isInteger(o.revealedThrough) || o.revealedThrough < -1)
+  ) {
+    return false;
   }
   if (o.questionDeadlineMs !== undefined && o.questionDeadlineMs !== null) {
     if (

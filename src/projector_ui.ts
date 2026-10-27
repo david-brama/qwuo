@@ -484,7 +484,7 @@ export function projectorHtml(
       backBtn.disabled = !state.canGoBack;
       nextBtn.disabled = state.phase === "END";
       nextBtn.textContent = state.phase === "END" ? "Done" : "Next";
-      // Reset: back to LOBBY, clear filters, keep participants/scores
+      // Reset: back to LOBBY, clear filters, keep participants, zero scores
       resetBtn.disabled = false;
     }
 
@@ -597,7 +597,7 @@ export function projectorHtml(
         main.innerHTML = \`
           \${metaHtml}
           <div class="slide-content">
-            <div class="q-progress">Question \${state.questionIndex + 1} of \${total}</div>
+            <div class="q-progress">Question \${state.questionIndex + 1} of \${total}\${state.answersLocked ? " · Answers closed" : ""}</div>
             \${activeAnsweredLine}
             <div class="q-text">\${md(q.text)}</div>
             <div class="choices">\${renderChoices(q.choices, hi)}</div>
@@ -698,7 +698,7 @@ export function projectorHtml(
     resetBtn.addEventListener("click", () => {
       if (navBusy) return;
       const ok = confirm(
-        "Return to lobby and clear filters? Participants and scores are kept.",
+        "Return to lobby and clear filters? Participants stay joined; all scores reset to 0.",
       );
       if (!ok) return;
       postNav("/api/reset");

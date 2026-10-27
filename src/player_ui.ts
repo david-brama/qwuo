@@ -211,6 +211,14 @@ export function playerHtml(logoHtml = ""): string {
       }
       if (phase === "LOBBY") lastFeedback = null;
 
+      if (phase === "QUESTION" && state.answersLocked && !answered && !lastFeedback) {
+        show("wait");
+        document.getElementById("wait-msg").textContent = "Answers closed";
+        document.getElementById("wait-sub").textContent =
+          "The host is reviewing this question · score " + score;
+        return;
+      }
+
       if (phase === "QUESTION" && !answered && !lastFeedback) {
         show("question");
         document.getElementById("q-meta").textContent =

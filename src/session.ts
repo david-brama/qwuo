@@ -63,6 +63,11 @@ export type SessionHydrate = {
    * (or legacy snapshot — caller may start a fresh countdown).
    */
   questionDeadlineMs?: number | null;
+  /**
+   * Highest question index whose correct answer has been shown (-1 = none).
+   * Omitted (legacy snapshot) → derived from phase / questionIndex.
+   */
+  revealedThrough?: number;
 };
 
 /** Server-side name cap (matches player input maxlength). */
@@ -194,6 +199,12 @@ export class Session {
   private countdownGeneration = 0;
   private countdownTimer: ReturnType<typeof setTimeout> | null = null;
   private countdownHooks: CountdownHooks = {};
+  /**
+   * Highest question index whose answer has been revealed (reached CORRECT).
+   * Play is lockstep, so every lower index is revealed too. A QUESTION at or
+   * below this index is read-only: no answers, no countdown.
+   */
+  private revealedThrough = -1;
 
   constructor(quiz: Quiz, options?: SessionOptions) {
     this.quiz = quiz;
@@ -219,6 +230,24 @@ export class Session {
     return this.questionDeadlineMs;
   }
 
+  /** True when the current QUESTION's answer was already revealed (Back). */
+  get answersLocked(): boolean {
+    return this.phase === "QUESTION" &&
+      this.questionIndex <= this.revealedThrough;
+  }
+
+  /** Highest revealed question index (-1 = none). */
+  getRevealedThrough(): number {
+    return this.revealedThrough;
+  }
+
+  /** Record that the current question's answer is now shown. */
+  private markCurrentRevealed(): void {
+    if (this.questionIndex > this.revealedThrough) {
+      this.revealedThrough = this.questionIndex;
+    }
+  }
+
   private clearCountdownTimer(): void {
     if (this.countdownTimer !== null) {
       clearTimeout(this.countdownTimer);
@@ -239,6 +268,11 @@ export class Session {
    */
   private startCountdownForCurrentQuestion(): void {
     this.clearCountdownTimer();
+    if (this.answersLocked) {
+      this.questionDeadlineMs = null;
+      this.countdownTotalSeconds = null;
+      return;
+    }
     const effective = effectiveCountdownSeconds(this.quiz, this.currentQuestion);
     if (effective === null || effective <= 0) {
       this.questionDeadlineMs = null;
@@ -261,7 +295,7 @@ export class Session {
    */
   restoreCountdown(deadlineMs: number | null | undefined): void {
     this.clearCountdownTimer();
-    if (this.phase !== "QUESTION") {
+    if (this.phase !== "QUESTION" || this.answersLocked) {
       this.questionDeadlineMs = null;
       this.countdownTotalSeconds = null;
       return;
@@ -291,6 +325,7 @@ export class Session {
       this.countdownTotalSeconds = null;
       if (this.phase === "QUESTION") {
         this.phase = "CORRECT";
+        this.markCurrentRevealed();
       }
       return;
     }
@@ -317,6 +352,7 @@ export class Session {
     if (this.phase !== "QUESTION") return;
     // Unanswered stay at 0 — same as host advance from QUESTION
     this.phase = "CORRECT";
+    this.markCurrentRevealed();
     this.clearCountdown();
     const hook = this.countdownHooks.onAutoAdvance;
     if (hook) {
@@ -436,6 +472,8 @@ export class Session {
     session.phase = state.phase;
     session.questionIndex = state.questionIndex;
     session.nextJoinOrder = state.nextJoinOrder;
+    session.revealedThrough = state.revealedThrough ??
+      legacyRevealedThrough(state.phase, state.questionIndex, session.questionCount);
     for (const p of state.participants) {
       session.participants.set(p.id, {
         id: p.id,
@@ -465,22 +503,25 @@ export class Session {
       effectiveQuestions: cloneQuestions(this.playQuestions),
       runtimeFilters: cloneFilters(this.runtimeFilters),
       questionDeadlineMs: this.questionDeadlineMs,
+      revealedThrough: this.revealedThrough,
     };
   }
 
   /**
    * Soft host reset: return to LOBBY, clear runtime filters (full bank +
-   * fresh shuffle), keep participants and scores. Per-question answers are
-   * cleared so indices stay consistent with the rebuilt playable set.
+   * fresh shuffle), keep participants (same QR / ids). Scores and
+   * per-question answers are zeroed so a replay cannot score twice.
    */
   reset(): void {
     this.clearCountdown();
     this.phase = "LOBBY";
     this.questionIndex = 0;
+    this.revealedThrough = -1;
     this.runtimeFilters = [];
     this.playQuestions = this.buildShuffledPlayQuestions([]);
     for (const p of this.participants.values()) {
       p.answers.clear();
+      p.score = 0;
     }
   }
 
@@ -534,6 +575,12 @@ export class Session {
     if (this.phase !== "QUESTION") {
       throw new SessionError("Answers only accepted during QUESTION phase", 400);
     }
+    if (this.answersLocked) {
+      throw new SessionError(
+        "Answers are closed: the correct answer was already shown",
+        409,
+      );
+    }
     const p = this.participants.get(participantId);
     if (!p) {
       throw new SessionError("Unknown participant", 404);
@@ -567,6 +614,7 @@ export class Session {
       case "QUESTION":
         // Unanswered stay at 0 — no retroactive answers after this
         this.phase = "CORRECT";
+        this.markCurrentRevealed();
         break;
       case "CORRECT":
         this.phase = "EXPLAIN";
@@ -593,7 +641,10 @@ export class Session {
   /**
    * Reverse one host step (projector Back). LOBBY is a no-op.
    * Does not clear answers or scores — only phase / question index.
-   * Back into QUESTION restarts a full countdown (does not resume partial).
+   * Back from CORRECT shows the QUESTION read-only (answersLocked): answers
+   * are rejected and no countdown runs, since the answer was already shown.
+   * Re-entering an unrevealed QUESTION (Back past it, then Next) starts a
+   * full countdown (does not resume partial).
    */
   back(): Phase {
     const prev = this.phase;
@@ -721,6 +772,7 @@ export class Session {
       activeFilters: this.getRuntimeFilters(),
       filterFacets: this.getFilterFacets(),
       countdown: this.countdownPayload(),
+      answersLocked: this.answersLocked,
       question: q
         ? {
           text: q.text,
@@ -749,6 +801,7 @@ export class Session {
       questionIndex: this.questionIndex,
       questionCount: this.questionCount,
       countdown: this.countdownPayload(),
+      answersLocked: this.answersLocked,
       question: q
         ? {
           text: q.text,
@@ -764,6 +817,28 @@ export class Session {
         }
         : null,
     };
+  }
+}
+
+/**
+ * Revealed watermark for snapshots saved before it was stored. Lockstep play
+ * means every index before the current one was revealed, plus the current one
+ * once past QUESTION.
+ */
+export function legacyRevealedThrough(
+  phase: Phase,
+  questionIndex: number,
+  questionCount: number,
+): number {
+  switch (phase) {
+    case "LOBBY":
+      return -1;
+    case "QUESTION":
+      return questionIndex - 1;
+    case "END":
+      return questionCount - 1;
+    default:
+      return questionIndex;
   }
 }
 
