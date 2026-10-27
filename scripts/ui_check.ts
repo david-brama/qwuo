@@ -583,6 +583,60 @@ async function checkSlowPresses(phone: Page): Promise<string[]> {
 }
 
 // --------------------------------------------------------------------------
+// Phone offline: failed polls and a failed answer show a banner and an error
+// at the top of the screen, even when the choices are scrolled into view
+
+function phoneInView(phone: Page, sel: string): Promise<boolean> {
+  return phone.evaluate((s) => {
+    const el = document.querySelector(s);
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && r.top >= 0 && r.left >= 0 &&
+      r.bottom <= innerHeight && r.right <= innerWidth;
+  }, sel);
+}
+
+async function checkPhoneOffline(
+  phone: Page,
+  shot: (page: Page, name: string) => Promise<void>,
+  vp: string,
+): Promise<string[]> {
+  const fails: string[] = [];
+  const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  // The slow-press check left a (stubbed) answer error with the card scrolled
+  if (!(await phone.textContent("#answer-error"))?.includes("press counted")) {
+    fails.push("answer error not shown");
+  } else if (!(await phoneInView(phone, "#answer-error"))) {
+    fails.push("answer error not visible without scrolling");
+  }
+  if (await phone.isVisible("#conn-banner")) fails.push("banner shown while the server is up");
+  await phone.route("**/api/state*", (r) => r.abort());
+  await phone.route("**/api/answer", (r) => r.abort());
+  try {
+    await phone.waitForSelector("#conn-banner", { state: "visible", timeout: 5000 })
+      .catch(() => fails.push("no banner after polls kept failing"));
+    const btn = phone.locator("#q-choices .choice").last();
+    await btn.scrollIntoViewIfNeeded();
+    await btn.click();
+    await pause(300);
+    if (!(await phoneInView(phone, "#conn-banner"))) fails.push("banner not visible without scrolling");
+    const err = (await phone.textContent("#answer-error")) ?? "";
+    if (!/not sent/.test(err)) fails.push(`offline tap: answer error "${err}"`);
+    else if (!(await phoneInView(phone, "#answer-error"))) {
+      fails.push("offline answer error not visible without scrolling");
+    }
+    if (!(await phone.isVisible("#view-question.active"))) fails.push("offline tap left the question");
+    await shot(phone, `player-offline-tap-${vp}`);
+  } finally {
+    await phone.unroute("**/api/state*");
+    await phone.unroute("**/api/answer");
+  }
+  await phone.waitForSelector("#conn-banner", { state: "hidden", timeout: 5000 })
+    .catch(() => fails.push("banner not cleared after recovery"));
+  return fails;
+}
+
+// --------------------------------------------------------------------------
 // Phone: the correct/incorrect result is still there after a reload
 
 async function checkPhoneResult(phone: Page, wantCorrect: boolean): Promise<string[]> {
@@ -919,6 +973,9 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
       if (qi === 0) {
         await phone.waitForSelector("#view-question.active");
         for (const f of await checkSlowPresses(phone)) failures.push(`${phoneVp} ${tag}: ${f}`);
+        for (const f of await checkPhoneOffline(phone, shot, phoneVp)) {
+          failures.push(`${phoneVp} ${tag} offline: ${f}`);
+        }
         await phone.locator("#q-choices .choice").first().click();
         await phone.waitForSelector("#view-feedback.active", { timeout: 5000 })
           .then(() => phoneChoice = 0)

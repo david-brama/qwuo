@@ -1344,6 +1344,46 @@ input[type="text"]:focus { border-color: var(--accent); }
 .feedback.ok .big { color: var(--correct); }
 .feedback.bad .big { color: var(--incorrect); }
 
+/* Reconnecting banner and answer errors: above the scrolling card */
+.conn-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  flex-shrink: 0;
+  margin-bottom: 0.6rem;
+  padding: 0.55rem 0.85rem;
+  border-radius: 10px;
+  background: #78350f;
+  border: 2px solid #f59e0b;
+  color: #fff7ed;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+.conn-banner[hidden] { display: none; }
+.conn-dot {
+  flex-shrink: 0;
+  width: 0.7em;
+  height: 0.7em;
+  border-radius: 50%;
+  background: #f59e0b;
+  animation: conn-pulse 1s ease-in-out infinite;
+}
+@keyframes conn-pulse {
+  50% { opacity: 0.25; }
+}
+.top-error {
+  flex-shrink: 0;
+  min-height: 0;
+  margin-bottom: 0.6rem;
+  padding: 0.5rem 0.85rem;
+  border-radius: 10px;
+  background: var(--incorrect-bg);
+  border: 1px solid var(--incorrect);
+  color: #fecaca;
+  font-weight: 600;
+}
+.top-error:empty { display: none; }
+
 .footer-note {
   margin-top: 0.75rem;
   padding-top: 0.75rem;

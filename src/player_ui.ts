@@ -24,6 +24,13 @@ export function playerHtml(logoHtml = ""): string {
       ${logoHtml}
     </div>
 
+    <!-- Outside the scrolling card, so it is seen without scrolling -->
+    <div id="conn-banner" class="conn-banner" role="alert" hidden>
+      <span class="conn-dot" aria-hidden="true"></span>
+      <span id="conn-text">Connection lost · reconnecting…</span>
+    </div>
+    <div class="error top-error" id="answer-error" role="alert"></div>
+
     <div class="card">
       <!-- JOIN -->
       <div class="view active" id="view-join">
@@ -55,7 +62,6 @@ export function playerHtml(logoHtml = ""): string {
         <div class="countdown" id="q-countdown" hidden aria-live="polite" aria-atomic="true"></div>
         <div class="q-text" id="q-text"></div>
         <div class="choices" id="q-choices"></div>
-        <div class="error" id="answer-error"></div>
       </div>
 
       <!-- FEEDBACK -->
@@ -108,6 +114,44 @@ export function playerHtml(logoHtml = ""): string {
       for (const [k, el] of Object.entries(views)) {
         el.classList.toggle("active", k === name);
       }
+      if (name !== "question") document.getElementById("answer-error").textContent = "";
+    }
+
+    async function fetchWithTimeout(url, init, ms) {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), ms);
+      try {
+        return await fetch(url, { ...init, signal: ctl.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    // Reconnecting banner: shown after CONN_FAILS_TO_WARN failed polls in a
+    // row (~2 s at the 1 s poll) or at once when an answer cannot be sent;
+    // cleared by the next good response
+    const CONN_FAILS_TO_WARN = 2;
+    const connBanner = document.getElementById("conn-banner");
+    const connText = document.getElementById("conn-text");
+    let connFails = 0;
+
+    function noteConnection(ok) {
+      if (ok) {
+        connFails = 0;
+        connBanner.hidden = true;
+        return;
+      }
+      connFails += 1;
+      if (connFails >= CONN_FAILS_TO_WARN) {
+        connText.textContent = "Connection lost · reconnecting…";
+        connBanner.hidden = false;
+      }
+    }
+
+    function showOffline(message) {
+      connFails = Math.max(connFails, CONN_FAILS_TO_WARN);
+      connText.textContent = message;
+      connBanner.hidden = false;
     }
 
     function esc(s) {
@@ -166,9 +210,17 @@ export function playerHtml(logoHtml = ""): string {
       const url = participantId
         ? SESSION_BASE + "/api/state?id=" + encodeURIComponent(participantId)
         : SESSION_BASE + "/api/state";
-      const res = await fetch(url);
-      if (!res.ok) throw new Error("state failed");
-      state = await res.json();
+      let next;
+      try {
+        const res = await fetchWithTimeout(url, {}, 4000);
+        if (!res.ok) throw new Error("state failed");
+        next = await res.json();
+      } catch (e) {
+        noteConnection(false);
+        throw e;
+      }
+      noteConnection(true);
+      state = next;
       document.getElementById("quiz-title").textContent = state.title || "Quiz";
 
       if (state.participant) {
@@ -308,11 +360,20 @@ export function playerHtml(logoHtml = ""): string {
       answering = true;
       document.getElementById("answer-error").textContent = "";
       try {
-        const res = await fetch(SESSION_BASE + "/api/answer", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: participantId, choiceIndex }),
-        });
+        let res;
+        try {
+          res = await fetchWithTimeout(SESSION_BASE + "/api/answer", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: participantId, choiceIndex }),
+          }, 8000);
+        } catch {
+          showOffline("No connection · answer not sent");
+          document.getElementById("answer-error").textContent =
+            "Your answer was not sent. Check your connection and tap again.";
+          return;
+        }
+        noteConnection(true);
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           document.getElementById("answer-error").textContent =
