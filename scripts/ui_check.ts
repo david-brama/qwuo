@@ -437,6 +437,69 @@ function measureInPage(): Measure {
 }
 
 // --------------------------------------------------------------------------
+// Presenter keys (run from END; leaves the session at END)
+
+async function checkPresenterKeys(app: App, page: Page): Promise<string[]> {
+  const fails: string[] = [];
+  const pause = (ms = 500) => new Promise((r) => setTimeout(r, ms));
+  const phase = async () => (await projState(app)).phase;
+  const expect = async (want: string, what: string) => {
+    await pause();
+    const got = await phase();
+    if (got !== want) fails.push(`${what}: phase ${got}, want ${want}`);
+  };
+  await page.mouse.click(5, 5); // focus the page, not a control
+  await page.keyboard.press("ArrowLeft");
+  await expect("LEADERBOARD", "ArrowLeft from END");
+  await page.keyboard.press("PageDown");
+  await expect("END", "PageDown (clicker)");
+  await page.keyboard.press("PageUp");
+  await expect("LEADERBOARD", "PageUp (clicker)");
+  await page.keyboard.press("Space");
+  await expect("END", "Space");
+  await page.keyboard.press("PageUp");
+  await expect("LEADERBOARD", "PageUp");
+  await page.keyboard.press("Enter");
+  await expect("END", "Enter");
+  // Two presses 150 ms apart (clicker double-send) = one step, even
+  // though the first request has finished by then
+  await page.keyboard.press("ArrowLeft");
+  await pause(150);
+  await page.keyboard.press("ArrowLeft");
+  await expect("LEADERBOARD", "double ArrowLeft within debounce");
+  await page.keyboard.press("ArrowRight");
+  await expect("END", "ArrowRight");
+  // Held key: repeats are ignored
+  await page.keyboard.down("ArrowLeft");
+  for (let i = 0; i < 4; i++) {
+    await pause(150);
+    await page.keyboard.down("ArrowLeft");
+  }
+  await page.keyboard.up("ArrowLeft");
+  await expect("LEADERBOARD", "held ArrowLeft");
+  await page.keyboard.press("ArrowRight");
+  await expect("END", "ArrowRight");
+  // No single key resets
+  for (const key of ["r", "R", "Delete", "Backspace", "Escape", "Home"]) {
+    await page.keyboard.press(key);
+  }
+  await expect("END", "reset-like keys");
+  // Typing in a control: the text-size slider keeps its arrows
+  await page.focus("#font-scale");
+  await page.keyboard.press("ArrowLeft");
+  await expect("END", "ArrowLeft on the text-size slider");
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  // Open QR modal: keys do nothing
+  await page.click("#qr-small");
+  await page.keyboard.press("ArrowLeft");
+  await expect("END", "ArrowLeft with the QR modal open");
+  await page.keyboard.press("Escape");
+  await pause(100);
+  if (await page.isVisible("#qr-modal")) fails.push("Escape did not close the QR modal");
+  return fails;
+}
+
+// --------------------------------------------------------------------------
 // Runner
 
 export interface UiCheckOptions {
@@ -693,6 +756,9 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
     await goTo(app, "END");
     await check("end", "END", "end");
     await shot(phone, `player-end-${phoneVp}`);
+    for (const f of await checkPresenterKeys(app, pages[0].page)) {
+      failures.push(`${pages[0].vp} keys: ${f}`);
+    }
   } finally {
     await browser?.close().catch(() => {});
     await app?.stop();

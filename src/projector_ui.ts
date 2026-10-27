@@ -4,6 +4,11 @@ import {
   purifyBundleScript,
   MD_RENDER_JS,
 } from "./markdown.ts";
+import {
+  KEY_NAV_DEBOUNCE_MS,
+  keyNavAllowed,
+  projectorKeyAction,
+} from "./projector_keys.ts";
 
 export function projectorHtml(
   joinUrl: string,
@@ -794,6 +799,43 @@ export function projectorHtml(
         navBusy = false;
         updateNavButtons();
       }
+    }
+
+    // Presenter keys / clicker: see src/projector_keys.ts
+    ${projectorKeyAction.toString()}
+    ${keyNavAllowed.toString()}
+    const KEY_NAV_DEBOUNCE_MS = ${KEY_NAV_DEBOUNCE_MS};
+    let lastKeyNavMs = -Infinity;
+
+    function anyModalOpen() {
+      return !qrModal.hidden;
+    }
+
+    document.addEventListener("keydown", (e) => {
+      const t = e.target instanceof Element ? e.target : null;
+      const typing = !!(t && t.closest(
+        'input, textarea, select, [contenteditable=""], [contenteditable="true"], #filter-panel',
+      ));
+      const onButton = !!(t && t.closest('button, [role="button"], a[href]'));
+      const action = projectorKeyAction(e, {
+        typing,
+        modalOpen: anyModalOpen(),
+        onButton,
+      });
+      if (!action) return;
+      e.preventDefault();
+      const now = performance.now();
+      if (!keyNavAllowed(now, lastKeyNavMs, KEY_NAV_DEBOUNCE_MS)) return;
+      const btn = action === "next" ? nextBtn : backBtn;
+      if (btn.disabled) return;
+      lastKeyNavMs = now;
+      postNav(action === "next" ? "/api/advance" : "/api/back");
+    });
+
+    // Clicking a host button must not leave focus on it, or a later
+    // Space/Enter would press that button instead of Next
+    for (const b of document.querySelectorAll("#footer button")) {
+      b.addEventListener("mousedown", (e) => e.preventDefault());
     }
 
     backBtn.addEventListener("click", () => postNav("/api/back"));
