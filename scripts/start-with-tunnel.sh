@@ -46,12 +46,22 @@ COMPOSE_SERVICE="cloudflared"
 APP_ARGS=("$@")
 SESSION_UUID=""
 
+# Kill a process and its descendants (children first). `deno` may be a
+# wrapper (e.g. the npm shim) whose child is the real server.
+kill_tree() {
+  local pid="$1" child
+  for child in $(pgrep -P "${pid}" 2>/dev/null || true); do
+    kill_tree "${child}"
+  done
+  kill "${pid}" 2>/dev/null || true
+}
+
 cleanup() {
   local code=$?
   trap - INT TERM EXIT
 
   if [[ -n "${DENO_PID}" ]] && kill -0 "${DENO_PID}" 2>/dev/null; then
-    kill "${DENO_PID}" 2>/dev/null || true
+    kill_tree "${DENO_PID}"
     wait "${DENO_PID}" 2>/dev/null || true
   fi
 
@@ -146,7 +156,7 @@ stop_tunnel() {
     fi
   fi
   if [[ -n "${CLOUDFLARED_PID}" ]] && kill -0 "${CLOUDFLARED_PID}" 2>/dev/null; then
-    kill "${CLOUDFLARED_PID}" 2>/dev/null || true
+    kill_tree "${CLOUDFLARED_PID}"
     wait "${CLOUDFLARED_PID}" 2>/dev/null || true
   fi
 }
@@ -253,7 +263,7 @@ health_check() {
 # its snapshot (same id, never SESSION_FRESH) so the room continues.
 restart_app() {
   if app_alive; then
-    kill "${DENO_PID}" 2>/dev/null || true
+    kill_tree "${DENO_PID}"
     wait "${DENO_PID}" 2>/dev/null || true
   fi
   export SESSION_FRESH=0

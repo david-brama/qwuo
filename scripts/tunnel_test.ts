@@ -101,12 +101,16 @@ if [[ "$*" == *"--url"* && "$*" != *" run "* ]]; then
 fi
 exec sleep 60`,
   );
+  // deno: a wrapper with a child "server" (like the npm deno shim), so the
+  // script must stop the whole process tree, not just the wrapper.
   write(
     "deno",
     `echo "PUBLIC_URL=$PUBLIC_URL SESSION_FRESH=\${SESSION_FRESH:-} SESSION_ID=\${SESSION_ID:-} args=$*" >> "${dir}/deno-calls"
 echo $$ > "${dir}/deno-pid"
 echo "Session id: ${SID}"
-exec sleep 60`,
+sleep 60 &
+echo $! >> "${dir}/deno-children"
+wait`,
   );
   write(
     "curl",
@@ -131,6 +135,14 @@ function alive(pidFile: string): boolean {
   if (!pid) return false;
   return new Deno.Command("kill", { args: ["-0", pid], stderr: "null" })
     .outputSync().success;
+}
+
+/** True if any recorded child "server" process of the deno stub is alive. */
+function anyDenoChildAlive(stubs: string): boolean {
+  return read(`${stubs}/deno-children`).trim().split("\n").filter(Boolean)
+    .some((pid) =>
+      new Deno.Command("kill", { args: ["-0", pid], stderr: "null" }).outputSync().success
+    );
 }
 
 function runScript(
@@ -207,8 +219,9 @@ Deno.test("tunnel script: health-checks, supervises and restarts cloudflared", a
     calls[1],
     `PUBLIC_URL=https://second-run-two.trycloudflare.com SESSION_FRESH=0 SESSION_ID=${SID} args=run -P main.ts -- -- --filter live=true`,
   );
-  // Cleanup stopped the app and the tunnel
+  // Cleanup (and the restart) stopped the app wrapper and its child server
   assert(await waitFor(() => !alive(`${stubs}/deno-pid`), 3_000), "deno stub still running");
+  assert(await waitFor(() => !anyDenoChildAlive(stubs), 3_000), "deno child still running");
   assert(await waitFor(() => !alive(`${stubs}/cf-pid`), 3_000), "cloudflared stub still running");
   Deno.removeSync(stubs, { recursive: true });
 });
@@ -222,6 +235,7 @@ Deno.test("tunnel script: fails loudly when PUBLIC_URL does not answer", async (
   assertEquals(res.code, 1, out);
   assert(out.includes("Health check FAILED: PUBLIC_URL does not answer"), out);
   assert(await waitFor(() => !alive(`${stubs}/deno-pid`), 3_000), "deno stub still running");
+  assert(await waitFor(() => !anyDenoChildAlive(stubs), 3_000), "deno child still running");
   assert(await waitFor(() => !alive(`${stubs}/cf-pid`), 3_000), "cloudflared stub still running");
   Deno.removeSync(stubs, { recursive: true });
 });
