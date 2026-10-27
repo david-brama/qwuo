@@ -567,9 +567,12 @@ async function checkSlowPresses(phone: Page): Promise<string[]> {
       await phone.mouse.down();
       await pause(400);
       await phone.mouse.up();
-      await pause(150);
+      // Wait for this press's request to finish before the next press
+      for (let t = 0; t < 40 && hits <= i; t++) await pause(50);
+      await phone.waitForFunction(() =>
+        [...document.querySelectorAll<HTMLButtonElement>("#q-choices .choice")]
+          .every((b) => !b.disabled), undefined, { timeout: 3000 }).catch(() => {});
     }
-    await pause(300);
   } finally {
     await phone.unroute("**/api/answer");
   }
