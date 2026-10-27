@@ -29,7 +29,7 @@ import {
   sessionToSnapshot,
 } from "./src/persist.ts";
 
-let config;
+let config: ReturnType<typeof loadConfig>;
 try {
   config = loadConfig();
 } catch (err) {
