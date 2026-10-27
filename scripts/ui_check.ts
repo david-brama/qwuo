@@ -24,9 +24,9 @@ export const PROJECTOR_VIEWPORTS: [number, number][] = [
 export const PHONE_VIEWPORT: [number, number] = [375, 667];
 
 /** Font floors (px) the check enforces; 1080p carries the room target. */
-const FONT_FLOORS: Record<string, { q: number; choice: number }> = {
-  "1920x1080": { q: 40, choice: 30 },
-  default: { q: 24, choice: 20 },
+const FONT_FLOORS: Record<string, { q: number; choice: number; lb: number }> = {
+  "1920x1080": { q: 40, choice: 30, lb: 40 },
+  default: { q: 24, choice: 20, lb: 22 },
 };
 
 const PUBLIC_URL = "https://quiet-harbor-example-lantern.trycloudflare.com";
@@ -235,6 +235,10 @@ export interface Measure {
   qFont: number | null;
   choiceFont: number | null;
   explainFont: number | null;
+  /** Leaderboard rows and podium places on screen. */
+  lbRows: number;
+  lbFont: number | null;
+  podium: number;
   qrBox: { x: number; y: number; width: number; height: number } | null;
 }
 
@@ -324,7 +328,8 @@ function measureInPage(): Measure {
     ...document.querySelectorAll(
       "#main .q-text, #main .choice, #main .explain-box, #main .lb-row, " +
         "#main .join-url, #main .participant-count, #main .end-title, " +
-        "#main .slide-meta-card, #main .lobby-sub, #main .q-progress",
+        "#main .slide-meta-card, #main .lobby-sub, #main .q-progress, " +
+        "#main .podium-place, #main .lb-end-sub",
     ),
   ].filter(visible);
   for (const el of content) {
@@ -370,6 +375,9 @@ function measureInPage(): Measure {
     qFont: font("#main .q-text"),
     choiceFont: font("#main .choices .choice"),
     explainFont: font("#main .explain-box"),
+    lbRows: [...document.querySelectorAll("#main .lb-row")].filter(visible).length,
+    lbFont: font("#main .leaderboard:not(.lb-rest) .lb-row"),
+    podium: [...document.querySelectorAll("#main .podium-place")].filter(visible).length,
     qrBox,
   };
 }
@@ -486,6 +494,7 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
     await phone.click("#join-btn");
     await phone.waitForSelector("#view-wait.active");
     await shot(phone, `player-lobby-${phoneVp}`);
+    const joined = players.length + 1;
 
     const check = async (tag: string, label: string, shotName: string | null) => {
       for (const { vp, w, h, page } of pages) {
@@ -510,6 +519,21 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
           }
         }
         if (m.explainFont !== null) s.minExplainFont = Math.min(s.minExplainFont, m.explainFont);
+        if (tag === "leaderboard") {
+          if (m.lbRows !== Math.min(10, joined)) {
+            failures.push(`${vp} ${label}: ${m.lbRows} leaderboard rows, want ${Math.min(10, joined)}`);
+          }
+          if (m.lbFont !== null && m.lbFont < floor.lb) {
+            failures.push(`${vp} ${label}: leaderboard font ${m.lbFont}px < ${floor.lb}px`);
+          }
+        }
+        if (tag === "end") {
+          if (m.podium !== Math.min(3, joined)) {
+            failures.push(`${vp} ${label}: ${m.podium} podium places, want ${Math.min(3, joined)}`);
+          }
+          const rest = Math.max(0, Math.min(10, joined) - 3);
+          if (m.lbRows !== rest) failures.push(`${vp} ${label}: ${m.lbRows} rows under podium, want ${rest}`);
+        }
         if (tag === "lobby") {
           if (!m.qrBox) {
             failures.push(`${vp} ${label}: no join QR`);
@@ -550,8 +574,9 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
         await shot(phone, `player-${nm("question")}-${phoneVp}`);
       }
       // A few answers so the counters are non-zero
-      for (const p of players.slice(0, 7)) {
-        await post(`${app.player}/api/answer`, { id: p.id, choiceIndex: qi % 4 }).catch(() => {});
+      for (const [i, p] of players.slice(0, 7).entries()) {
+        const choiceIndex = (qi + Math.floor(i / 2)) % 4;
+        await post(`${app.player}/api/answer`, { id: p.id, choiceIndex }).catch(() => {});
       }
       await goTo(app, "CORRECT", qi);
       await check("correct", `${tag} CORRECT`, nm("correct"));

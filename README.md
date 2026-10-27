@@ -161,7 +161,7 @@ PUBLIC_URL=https://YOUR-SUBDOMAIN.trycloudflare.com deno task start
 5. Learners scan QR → enter a display name (max 40 characters; up to 500 participants).
 6. **Next** leaves LOBBY into the first QUESTION.
 7. During QUESTION, phones answer once; they see correct/incorrect immediately. You still control the room pace with Next/Back (unless a countdown expires).
-8. Flow: show correct → explanation → leaderboard → next question… → END.
+8. Flow: show correct → explanation → leaderboard → next question… → END. The leaderboard shows the top 10 with scores out of the questions asked so far; tied scores share a rank (1, 1, 3). END shows the final standings on a podium.
 9. **Back** steps one phase backward (does not wipe scores). Back from CORRECT shows the question again **read-only** ("Answers closed"): no timer, answers are rejected, Next reveals it again. Re-entering a question whose answer was **not** shown yet starts a full timer.
 10. **Reset** (soft): back to LOBBY, clear runtime filters and per-question answers, **keep** names, **zero** scores, **same** session URL/QR. Snapshot is updated, not deleted.
 
@@ -457,6 +457,7 @@ openspec/                    Specs and archived change proposals
 - a choice, the question, the explanation, a leaderboard row or the join URL is outside the viewport, clipped by a parent, cut inside its box, or covered by another element
 - the lobby QR is outside the viewport, covered, smaller than about `min(65vh, 45vw)`, or does not decode (jsQR) to the join URL
 - the footer wraps, or question/choice text is below the floor (1080p: 40 px / 30 px; other sizes: 24 px / 20 px)
+- the leaderboard does not show the top 10 (or text is below 40 px at 1080p / 22 px elsewhere), or END has no podium
 
 ```bash
 deno task test:ui                              # every question in quiz.json (~25 s)

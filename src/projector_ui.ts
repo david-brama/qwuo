@@ -531,9 +531,15 @@ export function projectorHtml(
       return state && state.questionCount != null ? state.questionCount : 0;
     }
 
+    /** Questions scored so far (revealed), not the whole playable set. */
+    function questionsAsked() {
+      return state && typeof state.questionsAsked === "number"
+        ? state.questionsAsked
+        : 0;
+    }
+
     function formatScore(n) {
-      const total = playableCount();
-      return n + "/" + total;
+      return n + '<span class="lb-of">/' + questionsAsked() + "</span>";
     }
 
     function remainingSeconds(deadlineMs) {
@@ -632,13 +638,31 @@ export function projectorHtml(
     }
 
     function leaderboardRows(entries) {
-      return entries.slice(0, 10).map((e) => \`
+      return entries.map((e) => \`
         <div class="lb-row \${e.rank <= 3 ? "top3" : ""}">
           <div class="lb-rank">#\${e.rank}</div>
           <div class="lb-name">\${esc(e.name)}</div>
           <div class="lb-score">\${formatScore(e.score)}</div>
         </div>
       \`).join("");
+    }
+
+    /** END: top three on a podium (2nd · 1st · 3rd), places 4–10 below. */
+    function podiumHtml(entries) {
+      const top = entries.slice(0, 3);
+      const order = [top[1], top[0], top[2]].filter(Boolean);
+      const places = order.map((e) => \`
+        <div class="podium-place place-\${Math.min(e.rank, 3)}">
+          <div class="podium-name">\${esc(e.name)}</div>
+          <div class="podium-score">\${formatScore(e.score)}</div>
+          <div class="podium-block"><span class="podium-rank">\${e.rank}</span></div>
+        </div>
+      \`).join("");
+      const rest = entries.slice(3, 10);
+      return \`
+        <div class="podium">\${places}</div>
+        \${rest.length ? \`<div class="leaderboard lb-rest">\${leaderboardRows(rest)}</div>\` : ""}
+      \`;
     }
 
     function slideHtml(q, total, activeN) {
@@ -670,7 +694,7 @@ export function projectorHtml(
       }
 
       if (state.phase === "LEADERBOARD") {
-        const rows = leaderboardRows(state.leaderboard) ||
+        const rows = leaderboardRows(state.leaderboard.slice(0, 10)) ||
           \`<p class="muted">No participants yet</p>\`;
         return \`
           <div class="slide-content lb-slide">
@@ -680,11 +704,15 @@ export function projectorHtml(
       }
 
       if (state.phase === "END") {
+        const asked = questionsAsked();
+        const board = state.leaderboard.length
+          ? podiumHtml(state.leaderboard)
+          : \`<p class="muted">No participants</p>\`;
         return \`
-          <div class="slide-content lb-slide">
-            <div class="end-title">Session complete</div>
-            <p class="muted lb-end-sub">Final standings · out of \${total}</p>
-            <div class="leaderboard">\${leaderboardRows(state.leaderboard)}</div>
+          <div class="slide-content lb-slide end-slide">
+            <div class="end-title">Final standings</div>
+            <p class="muted lb-end-sub">Scores out of \${asked} question\${asked === 1 ? "" : "s"}</p>
+            \${board}
           </div>
         \`;
       }

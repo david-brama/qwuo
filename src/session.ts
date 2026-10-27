@@ -121,6 +121,20 @@ export function isActiveParticipant(
   return false;
 }
 
+/**
+ * Competition ranks ("1224") for scores already sorted high → low:
+ * equal scores share a rank, and the next rank skips the tied places.
+ */
+export function competitionRanks(sortedScores: readonly number[]): number[] {
+  const ranks: number[] = [];
+  for (let i = 0; i < sortedScores.length; i++) {
+    ranks.push(
+      i > 0 && sortedScores[i] === sortedScores[i - 1] ? ranks[i - 1] : i + 1,
+    );
+  }
+  return ranks;
+}
+
 /** Strip C0 controls + DEL; trim; enforce max length. */
 export function normalizeParticipantName(name: string): string {
   return name.replace(/[\u0000-\u001F\u007F]/g, "").trim();
@@ -702,18 +716,30 @@ export class Session {
     return this.phase !== "LOBBY";
   }
 
+  /**
+   * Score order with competition ranking: equal scores share a rank and the
+   * next rank skips (1, 1, 3). Ties list in join order.
+   */
   leaderboard(): LeaderboardEntry[] {
     const list = [...this.participants.values()].sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
       return a.joinOrder - b.joinOrder;
     });
-    return list.map((p, i) => ({
-      id: p.id,
-      name: p.name,
-      score: p.score,
-      joinOrder: p.joinOrder,
-      rank: i + 1,
+    return competitionRanks(list.map((p) => p.score)).map((rank, i) => ({
+      id: list[i].id,
+      name: list[i].name,
+      score: list[i].score,
+      joinOrder: list[i].joinOrder,
+      rank,
     }));
+  }
+
+  /**
+   * Questions whose answer has been revealed (scored) so far — the fair
+   * denominator for leaderboard scores.
+   */
+  questionsAsked(): number {
+    return Math.min(this.questionCount, Math.max(0, this.revealedThrough + 1));
   }
 
   hasAnswered(participantId: string, questionIndex = this.questionIndex): boolean {
@@ -768,6 +794,7 @@ export class Session {
       questionIndex: this.questionIndex,
       questionCount: this.questionCount,
       bankQuestionCount: this.bankQuestionCount,
+      questionsAsked: this.questionsAsked(),
       participantCount: this.participantCount(),
       activeUserCount,
       activeAnsweredCount,

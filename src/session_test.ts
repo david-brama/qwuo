@@ -4,6 +4,7 @@ import {
 } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import type { Quiz } from "./quiz.ts";
 import {
+  competitionRanks,
   engagementWindowIndices,
   isActiveParticipant,
   legacyRevealedThrough,
@@ -814,4 +815,53 @@ Deno.test("active metrics: reset clears active metrics", () => {
   assertEquals(session.projectorState().activeUserCount, 0);
   assertEquals(session.projectorState().activeAnsweredCount, 0);
   assertEquals(session.participantCount(), 1);
+});
+
+// --- Leaderboard ranking and denominator ---
+
+Deno.test("competitionRanks: ties share a rank and the next rank skips", () => {
+  assertEquals(competitionRanks([]), []);
+  assertEquals(competitionRanks([5]), [1]);
+  assertEquals(competitionRanks([3, 3, 1]), [1, 1, 3]);
+  assertEquals(competitionRanks([4, 3, 3, 3, 2, 2, 0]), [1, 2, 2, 2, 5, 5, 7]);
+  assertEquals(competitionRanks([0, 0, 0]), [1, 1, 1]);
+});
+
+Deno.test("leaderboard: competition ranking, ties in join order", () => {
+  const session = new Session(multiQuiz(3), { randomInt: alwaysZero });
+  const a = session.join("Ann").id;
+  const b = session.join("Ben").id;
+  const c = session.join("Cy").id;
+  session.join("Dee");
+  session.advance(); // Q0
+  answerRight(session, b);
+  answerRight(session, c);
+  answerWrong(session, a);
+  advanceToLeaderboard(session);
+  const board = session.leaderboard();
+  assertEquals(board.map((e) => [e.name, e.rank, e.score]), [
+    ["Ben", 1, 1],
+    ["Cy", 1, 1],
+    ["Ann", 3, 0],
+    ["Dee", 3, 0],
+  ]);
+  assertEquals(session.projectorState().leaderboard[3]!.rank, 3);
+});
+
+Deno.test("questionsAsked counts revealed questions, not the bank", () => {
+  const session = new Session(multiQuiz(5), { randomInt: alwaysZero });
+  assertEquals(session.projectorState().questionsAsked, 0);
+  session.advance(); // Q0 QUESTION
+  assertEquals(session.projectorState().questionsAsked, 0);
+  advanceToLeaderboard(session);
+  assertEquals(session.projectorState().questionsAsked, 1);
+  session.advance(); // Q1 QUESTION
+  advanceToLeaderboard(session);
+  assertEquals(session.projectorState().questionsAsked, 2);
+  // Back does not lower the count of questions already revealed
+  session.back();
+  session.back();
+  assertEquals(session.projectorState().questionsAsked, 2);
+  session.reset();
+  assertEquals(session.projectorState().questionsAsked, 0);
 });
