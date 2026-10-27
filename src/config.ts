@@ -16,6 +16,11 @@ export type Config = {
   sessionFresh: boolean;
   /** Startup metadata filters (env then CLI); empty = all questions. */
   filters: MetadataFilter[];
+  /**
+   * Header with the real client IP, trusted for rate limiting only when set
+   * (TRUST_PROXY_HEADER, e.g. `cf-connecting-ip`). Null = use socket address.
+   */
+  trustProxyHeader: string | null;
 };
 
 const UUID_RE =
@@ -161,6 +166,8 @@ export function loadConfig(
     sessionId,
     sessionFresh: envTruthy("SESSION_FRESH"),
     filters,
+    trustProxyHeader:
+      Deno.env.get("TRUST_PROXY_HEADER")?.trim().toLowerCase() || null,
   };
 }
 

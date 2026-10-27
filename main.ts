@@ -135,6 +135,7 @@ const playerHandler = createPlayerHandler(
   sessionId,
   hooks,
   logoDataUrl,
+  { trustProxyHeader: config.trustProxyHeader },
 );
 
 function onListenError(

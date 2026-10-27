@@ -67,7 +67,7 @@ export type SessionHydrate = {
 
 /** Server-side name cap (matches player input maxlength). */
 export const MAX_NAME_LENGTH = 40;
-export const MAX_PARTICIPANTS = 200;
+export const MAX_PARTICIPANTS = 500;
 
 /** Rolling window size for active-user engagement. */
 export const ENGAGEMENT_WINDOW_SIZE = 4;

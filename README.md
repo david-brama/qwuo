@@ -123,7 +123,7 @@ PUBLIC_URL=https://YOUR-SUBDOMAIN.trycloudflare.com deno task start
 2. **Open projector** at the printed `/s/<uuid>/` URL.
 3. Optional: **Filter** panel (LOBBY only) to narrow questions for this room.
 4. Optional: **Fullscreen** control; **text size** slider for long stems.
-5. Learners scan QR → enter a display name (max 40 characters; up to 200 participants).
+5. Learners scan QR → enter a display name (max 40 characters; up to 500 participants).
 6. **Next** leaves LOBBY into the first QUESTION.
 7. During QUESTION, phones answer once; they see correct/incorrect immediately. You still control the room pace with Next/Back (unless a countdown expires).
 8. Flow: show correct → explanation → leaderboard → next question… → END.
@@ -146,6 +146,7 @@ Need a brand-new empty room (no roster)? Use `SESSION_FRESH=1` at boot (see [Con
 | `SESSIONS_DIR` | `.qwuo` | Snapshots `{uuid}.json` + active pointer `current` |
 | `SESSION_ID` | _(unset)_ | Pin a session UUID; otherwise restore pointer or mint new |
 | `SESSION_FRESH` | _(unset)_ | `1` / `true` / `yes` → wipe that session’s snapshot on boot and start empty LOBBY (new UUID unless `SESSION_ID` is set) |
+| `TRUST_PROXY_HEADER` | _(unset)_ | Header that holds the real client IP for rate limiting, e.g. `cf-connecting-ip`. Unset → client IP headers (`X-Forwarded-For`, `cf-connecting-ip`, `x-real-ip`, …) are **ignored** and the socket address is used. For `x-forwarded-for` the right-most entry is used. Only set this when every request reaches the player port through that proxy |
 
 **CLI** (after `--` when using Deno tasks):
 
@@ -338,7 +339,10 @@ Snapshots are host-disk only (no cloud sync). Delete `.qwuo/` entries if you wan
 - Projector and player both listen on **loopback only**
 - Public phones should only reach the **player** port via an ad-hoc tunnel you control
 - Projector mutating APIs reject non-local `Origin` headers
-- Join / answer endpoints are rate-limited per client IP
+- Rate limits are built for a whole room behind **one office NAT IP**:
+  - Join: 1200 per minute per client IP
+  - Answer: 30 per minute per **participant id** (plus a 6000/min per-IP backstop)
+  - Client IP = socket address; proxy headers are only trusted with `TRUST_PROXY_HEADER`
 - No authentication, no multi-tenant isolation — one room per process
 
 Treat the host machine and `quiz.json` as the trust boundary.

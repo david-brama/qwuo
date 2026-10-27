@@ -18,7 +18,8 @@
         "SESSION_ID",
         "SESSION_FRESH",
         "PROJECTOR_PORT",
-        "PLAYER_PORT"
+        "PLAYER_PORT",
+        "TRUST_PROXY_HEADER"
       ]
     }
   },

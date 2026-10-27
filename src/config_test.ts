@@ -122,3 +122,19 @@ Deno.test("loadConfig: filters from options (no Deno.env QUIZ_FILTER side effect
     { key: "live", value: "true" },
   ]);
 });
+
+Deno.test("loadConfig: TRUST_PROXY_HEADER off by default, lowercased when set", () => {
+  const prev = Deno.env.get("TRUST_PROXY_HEADER");
+  try {
+    Deno.env.delete("TRUST_PROXY_HEADER");
+    assertEquals(loadConfig({ args: [], envFilter: "" }).trustProxyHeader, null);
+    Deno.env.set("TRUST_PROXY_HEADER", " CF-Connecting-IP ");
+    assertEquals(
+      loadConfig({ args: [], envFilter: "" }).trustProxyHeader,
+      "cf-connecting-ip",
+    );
+  } finally {
+    if (prev === undefined) Deno.env.delete("TRUST_PROXY_HEADER");
+    else Deno.env.set("TRUST_PROXY_HEADER", prev);
+  }
+});
