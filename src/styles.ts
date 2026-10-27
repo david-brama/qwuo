@@ -389,6 +389,17 @@ body {
   font-weight: 600;
 }
 
+.active-answered {
+  font-size: 1.1rem;
+  color: var(--muted);
+  margin: -0.35rem 0 1rem;
+  font-weight: 600;
+}
+
+.active-answered .score {
+  color: var(--text);
+}
+
 /* Fixed left rail — always on-screen, not clipped by main scroll */
 .slide-meta-rail {
   position: fixed;

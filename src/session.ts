@@ -69,6 +69,53 @@ export type SessionHydrate = {
 export const MAX_NAME_LENGTH = 40;
 export const MAX_PARTICIPANTS = 200;
 
+/** Rolling window size for active-user engagement. */
+export const ENGAGEMENT_WINDOW_SIZE = 4;
+/** Minimum answers within the window to count as active. */
+export const ACTIVE_ANSWER_THRESHOLD = 2;
+
+/**
+ * Playable question indices in the engagement window (at most
+ * ENGAGEMENT_WINDOW_SIZE), ending at the phase reference index.
+ * LOBBY → empty; END → last playable index; question cycle → current index.
+ */
+export function engagementWindowIndices(
+  phase: Phase,
+  questionIndex: number,
+  questionCount: number,
+): number[] {
+  let ref: number;
+  if (phase === "LOBBY") {
+    return [];
+  }
+  if (phase === "END") {
+    if (questionCount <= 0) return [];
+    ref = questionCount - 1;
+  } else {
+    ref = questionIndex;
+  }
+  const start = Math.max(0, ref - (ENGAGEMENT_WINDOW_SIZE - 1));
+  const out: number[] = [];
+  for (let i = start; i <= ref; i++) out.push(i);
+  return out;
+}
+
+/** True if the participant has ≥ ACTIVE_ANSWER_THRESHOLD answers in window. */
+export function isActiveParticipant(
+  answers: ReadonlyMap<number, number>,
+  window: readonly number[],
+): boolean {
+  if (window.length < ACTIVE_ANSWER_THRESHOLD) return false;
+  let n = 0;
+  for (const idx of window) {
+    if (answers.has(idx)) {
+      n++;
+      if (n >= ACTIVE_ANSWER_THRESHOLD) return true;
+    }
+  }
+  return false;
+}
+
 /** Strip C0 controls + DEL; trim; enforce max length. */
 export function normalizeParticipantName(name: string): string {
   return name.replace(/[\u0000-\u001F\u007F]/g, "").trim();
@@ -623,6 +670,33 @@ export class Session {
     return this.participants.size;
   }
 
+  /**
+   * Host engagement metrics derived from answer maps.
+   * activeAnsweredCount is 0 in LOBBY/END (no current-question slide).
+   */
+  private engagementMetrics(): {
+    activeUserCount: number;
+    activeAnsweredCount: number;
+  } {
+    const window = engagementWindowIndices(
+      this.phase,
+      this.questionIndex,
+      this.questionCount,
+    );
+    const trackCurrentAnswered =
+      this.phase !== "LOBBY" && this.phase !== "END";
+    let activeUserCount = 0;
+    let activeAnsweredCount = 0;
+    for (const p of this.participants.values()) {
+      if (!isActiveParticipant(p.answers, window)) continue;
+      activeUserCount++;
+      if (trackCurrentAnswered && p.answers.has(this.questionIndex)) {
+        activeAnsweredCount++;
+      }
+    }
+    return { activeUserCount, activeAnsweredCount };
+  }
+
   /** Host-facing full state */
   projectorState() {
     const q = this.phase === "LOBBY" || this.phase === "END"
@@ -630,6 +704,7 @@ export class Session {
       : this.currentQuestion;
 
     const slideKeys = this.quiz.config?.slideMetadataKeys;
+    const { activeUserCount, activeAnsweredCount } = this.engagementMetrics();
 
     return {
       role: "projector" as const,
@@ -639,6 +714,8 @@ export class Session {
       questionCount: this.questionCount,
       bankQuestionCount: this.bankQuestionCount,
       participantCount: this.participantCount(),
+      activeUserCount,
+      activeAnsweredCount,
       canGoBack: this.canGoBack(),
       canApplyFilter: this.phase === "LOBBY",
       activeFilters: this.getRuntimeFilters(),

@@ -3,7 +3,11 @@ import {
   assertNotEquals,
 } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import type { Quiz } from "./quiz.ts";
-import { Session } from "./session.ts";
+import {
+  engagementWindowIndices,
+  isActiveParticipant,
+  Session,
+} from "./session.ts";
 
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -511,4 +515,160 @@ Deno.test("stale timeout does not advance later question", async () => {
   if (session.phase === "QUESTION") {
     assertEquals(session.getQuestionDeadlineMs() !== null || deadline === null, true);
   }
+});
+
+// --- Active user engagement metrics ---
+
+function multiQuiz(n: number): Quiz {
+  return {
+    title: "Active",
+    questions: Array.from({ length: n }, (_, i) => ({
+      text: `Q${i + 1}?`,
+      choices: ["A", "B"],
+      correct: 0,
+      explain: "",
+    })),
+  };
+}
+
+/** Advance through a full question cycle ending on LEADERBOARD (or END on last). */
+function advanceToLeaderboard(session: Session): void {
+  // assume currently QUESTION
+  session.advance(); // CORRECT
+  session.advance(); // EXPLAIN
+  session.advance(); // LEADERBOARD
+}
+
+function answerWrong(session: Session, id: string): void {
+  const correct = session.projectorState().question!.correct;
+  session.answer(id, correct === 0 ? 1 : 0);
+}
+
+function answerRight(session: Session, id: string): void {
+  session.answer(id, session.projectorState().question!.correct);
+}
+
+Deno.test("engagementWindowIndices: LOBBY empty, short, four, END", () => {
+  assertEquals(engagementWindowIndices("LOBBY", 0, 10), []);
+  assertEquals(engagementWindowIndices("QUESTION", 0, 10), [0]);
+  assertEquals(engagementWindowIndices("QUESTION", 1, 10), [0, 1]);
+  assertEquals(engagementWindowIndices("CORRECT", 7, 10), [4, 5, 6, 7]);
+  assertEquals(engagementWindowIndices("END", 0, 10), [6, 7, 8, 9]);
+  assertEquals(engagementWindowIndices("END", 0, 0), []);
+});
+
+Deno.test("isActiveParticipant requires two answers in window", () => {
+  const window = [0, 1, 2, 3];
+  assertEquals(isActiveParticipant(new Map([[0, 0]]), window), false);
+  assertEquals(
+    isActiveParticipant(new Map([[0, 0], [2, 1]]), window),
+    true,
+  );
+  assertEquals(
+    isActiveParticipant(new Map([[0, 0]]), [0]),
+    false,
+  );
+});
+
+Deno.test("active metrics: Q0 never active even after answer", () => {
+  const session = new Session(multiQuiz(5), { randomInt: alwaysZero });
+  const { id } = session.join("A");
+  session.advance(); // Q0 QUESTION
+  answerRight(session, id);
+  const proj = session.projectorState();
+  assertEquals(proj.activeUserCount, 0);
+  assertEquals(proj.activeAnsweredCount, 0);
+});
+
+Deno.test("active metrics: 2-of-4 active; incorrect counts; non-active excluded", () => {
+  const session = new Session(multiQuiz(6), { randomInt: alwaysZero });
+  const engaged = session.join("Engaged").id;
+  const late = session.join("Late").id;
+  session.join("Silent");
+
+  // Q0 — both answer
+  session.advance();
+  answerWrong(session, engaged);
+  answerRight(session, late);
+  advanceToLeaderboard(session);
+
+  // Q1 — only engaged answers (wrong); window [0,1]
+  session.advance();
+  answerWrong(session, engaged);
+  const atQ1 = session.projectorState();
+  assertEquals(atQ1.activeUserCount, 1); // engaged: 2 answers; late: 1
+  assertEquals(atQ1.activeAnsweredCount, 1); // engaged answered Q1
+
+  // Q2 — only late answers; engaged still active from Q0+Q1 but did not answer Q2
+  advanceToLeaderboard(session);
+  session.advance();
+  answerRight(session, late);
+  const atQ2 = session.projectorState();
+  // window [0,1,2]: engaged answers {0,1} → active; late {0,2} → active
+  assertEquals(atQ2.activeUserCount, 2);
+  assertEquals(atQ2.activeAnsweredCount, 1); // only late answered Q2 among active
+  assertEquals(session.participantCount(), 3);
+});
+
+Deno.test("active metrics: LOBBY zeros; player state omits fields", () => {
+  const session = new Session(multiQuiz(3), { randomInt: alwaysZero });
+  session.join("A");
+  const proj = session.projectorState();
+  assertEquals(proj.activeUserCount, 0);
+  assertEquals(proj.activeAnsweredCount, 0);
+  const play = session.playerState() as Record<string, unknown>;
+  assertEquals("activeUserCount" in play, false);
+  assertEquals("activeAnsweredCount" in play, false);
+});
+
+Deno.test("active metrics: END window keeps activeUserCount; activeAnsweredCount 0", () => {
+  const session = new Session(multiQuiz(4), { randomInt: alwaysZero });
+  const a = session.join("A").id;
+  const b = session.join("B").id;
+  for (let q = 0; q < 4; q++) {
+    session.advance(); // QUESTION
+    answerRight(session, a);
+    if (q < 2) answerWrong(session, b); // B only first two
+    advanceToLeaderboard(session);
+    if (q < 3) {
+      // stay on LB then next Q via advance in loop start
+    }
+  }
+  // After last LEADERBOARD, one more advance → END
+  session.advance();
+  assertEquals(session.phase, "END");
+  const proj = session.projectorState();
+  // window [0,1,2,3]; A answered all 4 → active; B answered 0,1 → active
+  assertEquals(proj.activeUserCount, 2);
+  assertEquals(proj.activeAnsweredCount, 0);
+});
+
+Deno.test("active metrics: answer then re-read state updates counts", () => {
+  const session = new Session(multiQuiz(3), { randomInt: alwaysZero });
+  const id = session.join("P").id;
+  session.advance(); // Q0
+  answerRight(session, id);
+  advanceToLeaderboard(session);
+  session.advance(); // Q1 QUESTION
+  assertEquals(session.projectorState().activeUserCount, 0);
+  answerWrong(session, id);
+  const after = session.projectorState();
+  assertEquals(after.activeUserCount, 1);
+  assertEquals(after.activeAnsweredCount, 1);
+});
+
+Deno.test("active metrics: reset clears active metrics", () => {
+  const session = new Session(multiQuiz(3), { randomInt: alwaysZero });
+  const id = session.join("P").id;
+  session.advance();
+  answerRight(session, id);
+  advanceToLeaderboard(session);
+  session.advance();
+  answerRight(session, id);
+  assertEquals(session.projectorState().activeUserCount, 1);
+  session.reset();
+  assertEquals(session.phase, "LOBBY");
+  assertEquals(session.projectorState().activeUserCount, 0);
+  assertEquals(session.projectorState().activeAnsweredCount, 0);
+  assertEquals(session.participantCount(), 1);
 });

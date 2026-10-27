@@ -558,12 +558,26 @@ export function projectorHtml(
       }
       main.className = mainClasses.join(" ");
 
+      const activeN = typeof state.activeUserCount === "number"
+        ? state.activeUserCount
+        : 0;
+      const activeAnsweredN = typeof state.activeAnsweredCount === "number"
+        ? state.activeAnsweredCount
+        : 0;
+      const activePart = \` · \${activeN} active\`;
       const countPart = state.phase === "END"
-        ? "Session complete · " + total + " question" + (total === 1 ? "" : "s")
+        ? "Session complete · " + total + " question" + (total === 1 ? "" : "s") +
+          activePart
         : state.phase === "LOBBY"
-        ? \`\${state.participantCount} joined · \${total} question\${total === 1 ? "" : "s"}\`
-        : \`\${state.participantCount} joined · Q\${state.questionIndex + 1}/\${total}\`;
+        ? \`\${state.participantCount} joined\${activePart} · \${total} question\${total === 1 ? "" : "s"}\`
+        : \`\${state.participantCount} joined\${activePart} · Q\${state.questionIndex + 1}/\${total}\`;
       statusEl.textContent = countPart;
+
+      const activeAnsweredLine =
+        state.phase === "QUESTION" || state.phase === "CORRECT" ||
+          state.phase === "EXPLAIN"
+          ? \`<div class="active-answered"><span class="score">\${activeAnsweredN}</span> / <span class="score">\${activeN}</span> active answered</div>\`
+          : "";
 
       renderFilterPanel(false);
 
@@ -573,7 +587,7 @@ export function projectorHtml(
           <div class="lobby-sub">Scan to join on your phone</div>
           <div class="qr-large">\${QR_SVG}</div>
           <div class="join-url">\${esc(JOIN_URL)}</div>
-          <div class="participant-count"><span class="score">\${state.participantCount}</span> participant\${state.participantCount === 1 ? "" : "s"} waiting · <span class="score">\${total}</span> question\${total === 1 ? "" : "s"}</div>
+          <div class="participant-count"><span class="score">\${state.participantCount}</span> participant\${state.participantCount === 1 ? "" : "s"} waiting · <span class="score">\${activeN}</span> active · <span class="score">\${total}</span> question\${total === 1 ? "" : "s"}</div>
         \`;
         return;
       }
@@ -584,6 +598,7 @@ export function projectorHtml(
           \${metaHtml}
           <div class="slide-content">
             <div class="q-progress">Question \${state.questionIndex + 1} of \${total}</div>
+            \${activeAnsweredLine}
             <div class="q-text">\${md(q.text)}</div>
             <div class="choices">\${renderChoices(q.choices, hi)}</div>
           </div>
@@ -596,6 +611,7 @@ export function projectorHtml(
           \${metaHtml}
           <div class="slide-content">
             <div class="q-progress">Explanation · Q\${state.questionIndex + 1} of \${total}</div>
+            \${activeAnsweredLine}
             <div class="explain-box">\${md(q.explain || "No explanation")}</div>
           </div>
         \`;

@@ -213,11 +213,21 @@ Deno.test("session-scoped UI and state serve for active id", async () => {
   const ui = await projector(new Request(api("/")));
   assertEquals(ui.status, 200);
   assertEquals(ui.headers.get("content-type")?.includes("text/html"), true);
+  const html = await ui.text();
+  assertEquals(html.includes("active answered"), true);
+  assertEquals(html.includes("activeUserCount"), true);
 
   const st = await player(new Request(`http://0.0.0.0${BASE}/api/state`));
   assertEquals(st.status, 200);
   const body = await st.json();
   assertEquals(body.title, "HTTP Persist");
+
+  const projState = await projector(new Request(api("/api/state")));
+  assertEquals(projState.status, 200);
+  const pbody = await projState.json();
+  assertEquals(pbody.activeUserCount, 0);
+  assertEquals(pbody.activeAnsweredCount, 0);
+  assertEquals("activeUserCount" in body, false);
 });
 
 Deno.test("UI omits logo when none provided", async () => {
