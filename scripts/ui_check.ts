@@ -507,6 +507,35 @@ async function checkPresenterKeys(app: App, page: Page): Promise<string[]> {
 }
 
 // --------------------------------------------------------------------------
+// Reconnecting banner: state polls fail → banner; recovery → gone
+
+async function checkReconnectBanner(
+  page: Page,
+  vp: string,
+  shot: (page: Page, name: string) => Promise<void>,
+): Promise<string[]> {
+  const fails: string[] = [];
+  const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const shown = () => page.isVisible("#conn-banner");
+  if (await shown()) fails.push("banner shown while the server is up");
+  await page.route("**/api/state", (r) => r.abort());
+  await pause(1000); // at most one failed poll (1.5 s interval): not yet
+  if (await shown()) fails.push("banner after a single failed poll");
+  await page.waitForSelector("#conn-banner", { state: "visible", timeout: 5000 })
+    .catch(() => fails.push("no banner after polls kept failing"));
+  const inView = await page.evaluate(() => {
+    const r = document.getElementById("conn-banner")!.getBoundingClientRect();
+    return r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight;
+  });
+  if (!inView) fails.push("banner outside the viewport");
+  await shot(page, `projector-reconnecting-${vp}`);
+  await page.unroute("**/api/state");
+  await page.waitForSelector("#conn-banner", { state: "hidden", timeout: 5000 })
+    .catch(() => fails.push("banner not cleared after recovery"));
+  return fails;
+}
+
+// --------------------------------------------------------------------------
 // Auto-hiding host controls and the Reset confirm
 
 async function checkHostChrome(
@@ -843,6 +872,10 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
     for (const f of await checkPresenterKeys(app, pages[0].page)) {
       failures.push(`${pages[0].vp} keys: ${f}`);
     }
+    const lost = await Promise.all(
+      pages.map(({ vp, page }) => checkReconnectBanner(page, vp, shot)),
+    );
+    lost.forEach((fs, i) => fs.forEach((f) => failures.push(`${pages[i].vp} reconnect: ${f}`)));
     // Last: ends with a confirmed Reset (session back in LOBBY)
     for (const { vp, page } of pages) {
       for (const f of await checkHostChrome(app, page, vp, shot, vp === pages.at(-1)!.vp)) {

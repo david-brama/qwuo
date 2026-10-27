@@ -65,6 +65,11 @@ export function projectorHtml(
       </aside>
     </div>
 
+    <div id="conn-banner" class="conn-banner" role="alert" hidden>
+      <span class="conn-dot" aria-hidden="true"></span>
+      <span id="conn-text">Connection lost · reconnecting…</span>
+    </div>
+
     <!-- Viewport flex column: header | main | footer -->
     <header class="header" id="header">
       <div class="header-left">
@@ -777,8 +782,42 @@ export function projectorHtml(
       return "";
     }
 
+    /** fetch() that fails after timeoutMs, so a hung tunnel counts as down. */
+    async function fetchWithTimeout(url, init, timeoutMs) {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), timeoutMs);
+      try {
+        return await fetch(url, { ...init, signal: ctl.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    // Reconnecting banner: shown after CONN_FAILS_TO_WARN failed polls in
+    // a row (~3 s at the 1.5 s poll), cleared by the next good response
+    const CONN_FAILS_TO_WARN = 2;
+    const connBanner = document.getElementById("conn-banner");
+    const connText = document.getElementById("conn-text");
+    let connFails = 0;
+    let connLostAt = 0;
+
+    function noteConnection(ok) {
+      if (ok) {
+        connFails = 0;
+        connBanner.hidden = true;
+        return;
+      }
+      connFails += 1;
+      if (connFails === 1) connLostAt = Date.now();
+      if (connFails >= CONN_FAILS_TO_WARN) {
+        const sec = Math.round((Date.now() - connLostAt) / 1000);
+        connText.textContent = "Connection lost · reconnecting… (" + sec + " s)";
+        connBanner.hidden = false;
+      }
+    }
+
     async function fetchState() {
-      const res = await fetch(SESSION_BASE + "/api/state");
+      const res = await fetchWithTimeout(SESSION_BASE + "/api/state", {}, 4000);
       if (!res.ok) throw new Error("state failed");
       const next = await res.json();
       // Avoid clobbering draft while host is editing selects: only replace
@@ -800,7 +839,12 @@ export function projectorHtml(
       nextBtn.disabled = true;
       resetBtn.disabled = true;
       try {
-        const res = await fetch(SESSION_BASE + path, { method: "POST" });
+        const res = await fetchWithTimeout(
+          SESSION_BASE + path,
+          { method: "POST" },
+          8000,
+        );
+        noteConnection(true);
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
           console.error(err);
@@ -810,6 +854,9 @@ export function projectorHtml(
           facetsSignature = "";
           render();
         }
+      } catch (err) {
+        console.error("Navigation failed:", err);
+        noteConnection(false);
       } finally {
         navBusy = false;
         updateNavButtons();
@@ -921,13 +968,23 @@ export function projectorHtml(
     footer.addEventListener("focusin", showControls);
     showControls();
 
-    fetchState().catch((e) => {
+    function pollState() {
+      return fetchState().then(
+        () => noteConnection(true),
+        (e) => {
+          noteConnection(false);
+          throw e;
+        },
+      );
+    }
+
+    pollState().catch((e) => {
       main.innerHTML = \`<p class="muted">Failed to load: \${esc(e.message)}</p>\`;
     });
 
     // light poll so join count updates in lobby
     setInterval(() => {
-      if (!navBusy && !filterBusy) fetchState().catch(() => {});
+      if (!navBusy && !filterBusy) pollState().catch(() => {});
     }, 1500);
   </script>
 </body>

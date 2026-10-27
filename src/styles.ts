@@ -914,6 +914,39 @@ body {
   }
 }
 
+/* Reconnecting banner: over the header, above everything but dialogs */
+.conn-banner {
+  position: fixed;
+  top: clamp(6px, 1vh, 14px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 110;
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  max-width: calc(100vw - 24px);
+  padding: 0.45em 1.1em;
+  border-radius: 999px;
+  background: #78350f;
+  border: 2px solid #f59e0b;
+  color: #fff7ed;
+  font-size: clamp(16px, 2.6vh, 30px);
+  font-weight: 800;
+  white-space: nowrap;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+.conn-banner[hidden] { display: none; }
+.conn-dot {
+  width: 0.7em;
+  height: 0.7em;
+  border-radius: 50%;
+  background: #f59e0b;
+  animation: conn-pulse 1s ease-in-out infinite;
+}
+@keyframes conn-pulse {
+  50% { opacity: 0.25; }
+}
+
 /* Host controls auto-hide when the mouse is idle (layout does not move) */
 .footer-right {
   transition: opacity 0.3s ease, visibility 0.3s;
