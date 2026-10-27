@@ -892,13 +892,19 @@ export class Session {
     };
   }
 
-  /** Player-facing state — never leaks correct index before answer */
+  /**
+   * Player-facing state. The correct index is sent only once the current
+   * question has been revealed (CORRECT and later, or Back to a locked
+   * QUESTION), so a reload can rebuild the result without the client
+   * keeping it.
+   */
   playerState(participantId?: string | null) {
     const p = participantId ? this.participants.get(participantId) : undefined;
     const answered = p ? p.answers.has(this.questionIndex) : false;
     const q = this.phase === "LOBBY" || this.phase === "END"
       ? null
       : this.currentQuestion;
+    const revealed = q !== null && this.questionIndex <= this.revealedThrough;
 
     return {
       role: "player" as const,
@@ -912,6 +918,7 @@ export class Session {
         ? {
           text: q.text,
           choices: q.choices,
+          correctIndex: revealed ? q.correct : null,
         }
         : null,
       participant: p
@@ -920,6 +927,8 @@ export class Session {
           name: p.name,
           score: p.score,
           answered,
+          /** This player's choice for the current question, if any. */
+          choiceIndex: q ? p.answers.get(this.questionIndex) ?? null : null,
         }
         : null,
     };

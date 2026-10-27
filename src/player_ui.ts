@@ -201,18 +201,15 @@ export function playerHtml(logoHtml = ""): string {
       }
 
       const phase = state.phase;
-      const answered = state.participant.answered;
-
-      // Clear feedback when moving to a new question
-      if (
-        lastFeedback &&
-        (phase === "QUESTION" && state.questionIndex !== lastFeedback.questionIndex)
-      ) {
+      // Feedback from the answer response covers the gap until the next poll
+      if (lastFeedback && lastFeedback.questionIndex !== state.questionIndex) {
         lastFeedback = null;
       }
-      if (phase === "LOBBY") lastFeedback = null;
+      if (phase === "LOBBY" || phase === "END") lastFeedback = null;
+      const answered = state.participant.answered || !!lastFeedback;
+      const revealed = !!state.question && state.question.correctIndex != null;
 
-      if (phase === "QUESTION" && state.answersLocked && !answered && !lastFeedback) {
+      if (phase === "QUESTION" && state.answersLocked && !answered) {
         show("wait");
         document.getElementById("wait-msg").textContent = "Answers closed";
         document.getElementById("wait-sub").textContent =
@@ -220,7 +217,7 @@ export function playerHtml(logoHtml = ""): string {
         return;
       }
 
-      if (phase === "QUESTION" && !answered && !lastFeedback) {
+      if (phase === "QUESTION" && !answered) {
         show("question");
         const box = document.getElementById("q-choices");
         // Rebuild only for a new question: replacing the buttons on every
@@ -249,17 +246,9 @@ export function playerHtml(logoHtml = ""): string {
         return;
       }
 
-      if (phase === "QUESTION" && (answered || lastFeedback)) {
+      if (answered && (phase === "QUESTION" || revealed)) {
         show("feedback");
         paintFeedback();
-        return;
-      }
-
-      // non-QUESTION phases after join
-      if (lastFeedback && (phase === "CORRECT" || phase === "EXPLAIN" || phase === "LEADERBOARD")) {
-        show("feedback");
-        paintFeedback();
-        document.getElementById("wait-sub") && null;
         return;
       }
 
@@ -285,7 +274,18 @@ export function playerHtml(logoHtml = ""): string {
       const box = document.getElementById("fb-box");
       const big = document.getElementById("fb-big");
       const detail = document.getElementById("fb-detail");
-      if (lastFeedback) {
+      const q = state.question;
+      const mine = state.participant ? state.participant.choiceIndex : null;
+      if (q && q.correctIndex != null && mine != null) {
+        // Revealed: the server's record, so it survives a reload
+        const ok = mine === q.correctIndex;
+        box.className = "feedback " + (ok ? "ok" : "bad");
+        big.textContent = ok ? "Correct" : "Incorrect";
+        detail.textContent = ok
+          ? "Score: " + score
+          : "Correct answer: " + (LETTERS[q.correctIndex] || String(q.correctIndex + 1)) +
+            ". " + (q.choices[q.correctIndex] || "");
+      } else if (lastFeedback) {
         box.className = "feedback " + (lastFeedback.correct ? "ok" : "bad");
         big.textContent = lastFeedback.correct ? "Correct" : "Incorrect";
         if (!lastFeedback.correct && state.question) {

@@ -952,3 +952,44 @@ Deno.test("duplicate-name suffix keeps the name within MAX_NAME_LENGTH", () => {
   assertEquals(e2.length <= MAX_NAME_LENGTH, true);
   assertEquals(e2.endsWith("🙂 (2)"), true);
 });
+
+Deno.test("player state: correct index only after reveal; own choice kept", () => {
+  const session = new Session(multiQuiz(2), { randomInt: alwaysZero });
+  const a = session.join("A").id;
+  const b = session.join("B").id;
+  const c = session.join("C").id;
+  session.advance(); // QUESTION 0
+  answerRight(session, a);
+  answerWrong(session, b);
+  const correct = session.projectorState().question!.correct;
+  const open = session.playerState(a);
+  assertEquals(open.question!.correctIndex, null);
+  assertEquals(open.participant!.choiceIndex, correct);
+  assertEquals(session.playerState(c).participant!.choiceIndex, null);
+
+  for (const phase of ["CORRECT", "EXPLAIN", "LEADERBOARD"]) {
+    session.advance();
+    assertEquals(session.phase, phase);
+    // A fresh poll (e.g. after a reload) has everything to rebuild the result
+    const sa = session.playerState(a);
+    const sb = session.playerState(b);
+    assertEquals(sa.question!.correctIndex, correct);
+    assertEquals(sa.participant!.choiceIndex, correct);
+    assertNotEquals(sb.participant!.choiceIndex, correct);
+    assertEquals(session.playerState(c).participant!.choiceIndex, null);
+  }
+
+  session.advance(); // QUESTION 1: new question, nothing revealed or chosen
+  const next = session.playerState(a);
+  assertEquals(next.question!.correctIndex, null);
+  assertEquals(next.participant!.choiceIndex, null);
+
+  // Back from CORRECT to a locked QUESTION keeps the reveal
+  answerWrong(session, a);
+  session.advance(); // CORRECT
+  session.back();
+  assertEquals(session.answersLocked, true);
+  const locked = session.playerState(a);
+  assertEquals(locked.question!.correctIndex, session.projectorState().question!.correct);
+  assertNotEquals(locked.participant!.choiceIndex, null);
+});

@@ -583,6 +583,30 @@ async function checkSlowPresses(phone: Page): Promise<string[]> {
 }
 
 // --------------------------------------------------------------------------
+// Phone: the correct/incorrect result is still there after a reload
+
+async function checkPhoneResult(phone: Page, wantCorrect: boolean): Promise<string[]> {
+  const fails: string[] = [];
+  const want = wantCorrect ? "Correct" : "Incorrect";
+  const read = async () => {
+    await phone.waitForSelector("#view-feedback.active", { timeout: 5000 })
+      .catch(() => {});
+    await phone.waitForFunction(
+      (w) => document.getElementById("fb-big")?.textContent === w,
+      want,
+      { timeout: 3000 },
+    ).catch(() => {});
+    return (await phone.textContent("#fb-big"))?.trim() ?? "";
+  };
+  const before = await read();
+  if (before !== want) fails.push(`result "${before}", want "${want}"`);
+  await phone.reload();
+  const after = await read();
+  if (after !== want) fails.push(`after reload: result "${after}", want "${want}"`);
+  return fails;
+}
+
+// --------------------------------------------------------------------------
 // Auto-hiding host controls and the Reset confirm
 
 async function checkHostChrome(
@@ -890,9 +914,15 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
         await phone.waitForSelector("#view-question.active");
         await shot(phone, `player-${nm("question")}-${phoneVp}`);
       }
+      // The phone answers Q1 itself (first choice) after the slow presses
+      let phoneChoice: number | null = null;
       if (qi === 0) {
         await phone.waitForSelector("#view-question.active");
         for (const f of await checkSlowPresses(phone)) failures.push(`${phoneVp} ${tag}: ${f}`);
+        await phone.locator("#q-choices .choice").first().click();
+        await phone.waitForSelector("#view-feedback.active", { timeout: 5000 })
+          .then(() => phoneChoice = 0)
+          .catch(() => failures.push(`${phoneVp} ${tag}: answer tap did not show feedback`));
       }
       // A few answers so the counters are non-zero
       // (the per-player rate limit rejects some in a fast full run)
@@ -902,8 +932,18 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
         await post(`${app.player}/api/answer`, { id: p.id, choiceIndex })
           .then(() => accepted++, () => {});
       }
+      if (phoneChoice !== null) accepted++;
       await goTo(app, "CORRECT", qi);
       await check("correct", `${tag} CORRECT`, nm("correct"));
+      if (phoneChoice !== null) {
+        const correct = (await (await fetch(`${app.projector}/api/state`)).json() as {
+          question: { correct: number };
+        }).question.correct;
+        for (const f of await checkPhoneResult(phone, phoneChoice === correct)) {
+          failures.push(`${phoneVp} ${tag} CORRECT: ${f}`);
+        }
+        await shot(phone, `player-correct-reloaded-${phoneVp}`);
+      }
       if (qi === 0) {
         // Back from CORRECT: answers locked → no countdown
         await post(`${app.projector}/api/back`);
