@@ -24,9 +24,12 @@ export const PROJECTOR_VIEWPORTS: [number, number][] = [
 export const PHONE_VIEWPORT: [number, number] = [375, 667];
 
 /** Font floors (px) the check enforces; 1080p carries the room target. */
-const FONT_FLOORS: Record<string, { q: number; choice: number; lb: number }> = {
-  "1920x1080": { q: 40, choice: 30, lb: 40 },
-  default: { q: 24, choice: 20, lb: 22 },
+const FONT_FLOORS: Record<
+  string,
+  { q: number; choice: number; lb: number; timer: number }
+> = {
+  "1920x1080": { q: 40, choice: 30, lb: 40, timer: 44 },
+  default: { q: 24, choice: 20, lb: 22, timer: 28 },
 };
 
 const PUBLIC_URL = "https://quiet-harbor-example-lantern.trycloudflare.com";
@@ -93,7 +96,13 @@ export function findBrowser(): string | null {
 // Question selection
 
 interface QuizFile {
-  questions: { text: string; choices: string[]; explain?: string }[];
+  questions: {
+    text: string;
+    choices: string[];
+    explain?: string;
+    countdownSeconds?: number;
+  }[];
+  config?: { countdownSeconds?: number };
   [k: string]: unknown;
 }
 
@@ -241,6 +250,8 @@ export interface Measure {
   podium: number;
   /** "X of N" answered counter text, when shown. */
   answered: string | null;
+  /** Countdown seconds font (px) when the countdown is shown. */
+  countdownFont: number | null;
   qrBox: { x: number; y: number; width: number; height: number } | null;
 }
 
@@ -348,6 +359,27 @@ function measureInPage(): Measure {
     }
   }
 
+  // Countdown ring and time bar: nothing else may overlap their boxes
+  // (the bar ignores pointer events, so elementFromPoint cannot see it)
+  const hit = (a: DOMRect, b: DOMRect) =>
+    a.left < b.right - 0.5 && b.left < a.right - 0.5 &&
+    a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5;
+  for (const sel of ["#countdown", "#time-bar"]) {
+    const el = document.querySelector(sel);
+    if (!el || !visible(el)) continue;
+    const r = el.getBoundingClientRect();
+    if (sel === "#time-bar") checkBox(el, false);
+    const others = [
+      ...document.querySelectorAll(
+        ".brand-logo, #qr-small, #answered, .header-left, #countdown",
+      ),
+      ...content,
+    ].filter((o) => o !== el && visible(o));
+    for (const o of others) {
+      if (hit(r, o.getBoundingClientRect())) issues.push(`${sel} overlaps ${label(o).slice(0, 50)}`);
+    }
+  }
+
   // Footer must be one row
   const footer = document.getElementById("footer")!;
   const items = [...footer.querySelectorAll("button, .status-line, .font-slider")]
@@ -380,6 +412,7 @@ function measureInPage(): Measure {
     lbRows: [...document.querySelectorAll("#main .lb-row")].filter(visible).length,
     lbFont: font("#main .leaderboard:not(.lb-rest) .lb-row"),
     podium: [...document.querySelectorAll("#main .podium-place")].filter(visible).length,
+    countdownFont: font("#countdown .countdown-num"),
     answered: (() => {
       const el = document.querySelector("#answered .answered-num");
       return el && visible(el) ? (el.textContent || "").trim() : null;
@@ -501,6 +534,8 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
     await phone.waitForSelector("#view-wait.active");
     await shot(phone, `player-lobby-${phoneVp}`);
     const joined = players.length + 1;
+    // Whether the question on screen runs a countdown
+    let hasCountdown = false;
     let accepted = 0;
 
     const check = async (tag: string, label: string, shotName: string | null) => {
@@ -526,6 +561,12 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
           }
         }
         if (m.explainFont !== null) s.minExplainFont = Math.min(s.minExplainFont, m.explainFont);
+        const wantTimer = tag === "question" && hasCountdown;
+        if (wantTimer !== (m.countdownFont !== null)) {
+          failures.push(`${vp} ${label}: countdown ${wantTimer ? "missing" : "shown"}`);
+        } else if (m.countdownFont !== null && m.countdownFont < floor.timer) {
+          failures.push(`${vp} ${label}: countdown font ${m.countdownFont}px < ${floor.timer}px`);
+        }
         if (tag === "question" || tag === "correct" || tag === "explain") {
           // N moves with the 15 s online window, so only bound it
           const m2 = m.answered?.match(/^(\d+) of (\d+)$/);
@@ -584,6 +625,8 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
       };
       const src = subset.questions.findIndex((q) => q.text === st.question.text);
       const tag = `Q${qi + 1}(${picked[src] + 1})`;
+      hasCountdown = (subset.questions[src].countdownSeconds ??
+        subset.config?.countdownSeconds ?? 0) > 0;
       const want = opts.shotsAll || qi === 0 || src === longestSlide ||
         src === longestExplain;
       const nm = (phase: string) =>
@@ -603,6 +646,12 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
       }
       await goTo(app, "CORRECT", qi);
       await check("correct", `${tag} CORRECT`, nm("correct"));
+      if (qi === 0) {
+        // Back from CORRECT: answers locked → no countdown
+        await post(`${app.projector}/api/back`);
+        await check("locked", `${tag} QUESTION (locked)`, null);
+        await goTo(app, "CORRECT", qi);
+      }
       await goTo(app, "EXPLAIN", qi);
       await check("explain", `${tag} EXPLAIN`, nm("explain"));
       if (want) await shot(phone, `player-${nm("explain")}-${phoneVp}`);

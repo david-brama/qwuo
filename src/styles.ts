@@ -100,6 +100,7 @@ body {
   --pad-y: clamp(10px, 1.8vh, 24px);
   --pad-x: clamp(16px, 2.4vw, 48px);
   --hdr: clamp(48px, 7.5vh, 84px);
+  --gap: clamp(8px, 1.4vh, 18px);
   --fit: 1;
   flex: 1 1 auto;
   min-height: 0;
@@ -108,7 +109,7 @@ body {
   max-height: 100%;
   display: flex;
   flex-direction: column;
-  gap: clamp(8px, 1.4vh, 18px);
+  gap: var(--gap);
   padding: var(--pad-y) var(--pad-x);
   position: relative;
   overflow: hidden;
@@ -202,30 +203,79 @@ body {
 }
 .answered[hidden] { display: none; }
 
-/* QUESTION countdown (server deadline; whole seconds) */
+/*
+ * QUESTION countdown (server deadline): ring with large seconds in the
+ * header, plus a full-width bar in the gap under the header. Amber at
+ * 10 s, red at 5 s. Hidden with no countdown or when answers are locked.
+ */
 .countdown {
+  --ring: calc(var(--hdr) * 1.3);
+  --ring-color: var(--correct);
   flex: 0 0 auto;
-  min-width: 2.2em;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-  font-weight: 800;
-  font-size: clamp(28px, 5.6vh, 60px);
+  position: relative;
+  width: var(--ring);
+  height: var(--ring);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #0b0f14;
+}
+.countdown-ring {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+.ring-track,
+.ring-fill {
+  fill: none;
+  stroke-width: 10;
+}
+.ring-track { stroke: var(--surface-2); }
+.ring-fill {
+  stroke: var(--ring-color);
+  stroke-dasharray: 100;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.25s linear, stroke 0.2s;
+}
+.countdown-num {
+  position: relative;
+  font-size: calc(var(--ring) * 0.46);
+  font-weight: 900;
   line-height: 1;
-  color: var(--text);
-  padding: 0.12em 0.3em;
-  border-radius: var(--radius);
-  border: 2px solid var(--border);
-  background: var(--surface);
+  font-variant-numeric: tabular-nums;
+  color: #fff;
 }
-
-.countdown.urgent {
-  color: var(--incorrect);
-  border-color: var(--incorrect);
-}
-
+.countdown.warn { --ring-color: #f59e0b; }
+.countdown.urgent { --ring-color: var(--incorrect); }
+.countdown.urgent .countdown-num { color: #fecaca; }
 .countdown[hidden] {
   display: none !important;
 }
+
+.time-bar {
+  --bar: clamp(5px, 0.8vh, 10px);
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(-0.5 * (var(--gap) + var(--bar)));
+  height: var(--bar);
+  border-radius: var(--bar);
+  background: var(--surface-2);
+  overflow: hidden;
+  pointer-events: none;
+}
+.time-bar[hidden] { display: none; }
+.time-bar-fill {
+  height: 100%;
+  background: var(--correct);
+  transform-origin: left center;
+  transition: transform 0.25s linear, background 0.2s;
+}
+.time-bar.warn .time-bar-fill { background: #f59e0b; }
+.time-bar.urgent .time-bar-fill { background: var(--incorrect); }
 
 /* Optional gitignored logo.png */
 .brand-logo {

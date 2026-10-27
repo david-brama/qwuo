@@ -57,10 +57,17 @@ export function projectorHtml(
       </div>
       <div class="header-right">
         <div class="answered" id="answered" hidden></div>
-        <div class="countdown" id="countdown" hidden aria-live="polite" aria-atomic="true"></div>
+        <div class="countdown" id="countdown" hidden role="timer" aria-atomic="true">
+          <svg class="countdown-ring" viewBox="0 0 100 100" aria-hidden="true">
+            <circle class="ring-track" cx="50" cy="50" r="44" />
+            <circle class="ring-fill" id="ring-fill" cx="50" cy="50" r="44" pathLength="100" />
+          </svg>
+          <span class="countdown-num" id="countdown-num"></span>
+        </div>
         ${logoHtml}
         <div id="qr-small" class="qr-small" hidden title="Show join QR" role="button" tabindex="0">${qrSvgMarkup}</div>
       </div>
+      <div class="time-bar" id="time-bar" hidden aria-hidden="true"><div class="time-bar-fill" id="time-bar-fill"></div></div>
     </header>
     <main class="main" id="main"></main>
     <footer class="footer" id="footer">
@@ -112,6 +119,10 @@ export function projectorHtml(
     const filterError = document.getElementById("filter-error");
     const filterToggle = document.getElementById("filter-toggle");
     const countdownEl = document.getElementById("countdown");
+    const countdownNum = document.getElementById("countdown-num");
+    const ringFill = document.getElementById("ring-fill");
+    const timeBar = document.getElementById("time-bar");
+    const timeBarFill = document.getElementById("time-bar-fill");
     const answeredEl = document.getElementById("answered");
 
     let state = null;
@@ -542,28 +553,45 @@ export function projectorHtml(
       return n + '<span class="lb-of">/' + questionsAsked() + "</span>";
     }
 
-    function remainingSeconds(deadlineMs) {
-      return Math.max(0, Math.ceil((deadlineMs - Date.now()) / 1000));
+    /** Running QUESTION countdown, or null (none, or answers locked). */
+    function activeCountdown() {
+      if (!state || state.phase !== "QUESTION" || state.answersLocked) return null;
+      const c = state.countdown;
+      return c && c.deadlineMs != null ? c : null;
     }
 
+    /** Ring + large seconds in the header, full-width bar under it. */
     function paintCountdown() {
-      const c = state && state.phase === "QUESTION" ? state.countdown : null;
-      if (!c || c.deadlineMs == null) {
+      const c = activeCountdown();
+      if (!c) {
         countdownEl.hidden = true;
-        countdownEl.textContent = "";
-        countdownEl.classList.remove("urgent");
+        timeBar.hidden = true;
+        countdownNum.textContent = "";
+        countdownEl.classList.remove("warn", "urgent");
+        timeBar.classList.remove("warn", "urgent");
         return;
       }
-      const sec = remainingSeconds(c.deadlineMs);
+      const leftMs = Math.max(0, c.deadlineMs - Date.now());
+      const sec = Math.ceil(leftMs / 1000);
+      const frac = c.totalSeconds > 0
+        ? Math.min(1, leftMs / (c.totalSeconds * 1000))
+        : 0;
+      const urgent = sec <= 5;
+      const warn = !urgent && sec <= 10;
       countdownEl.hidden = false;
-      countdownEl.textContent = String(sec);
-      countdownEl.classList.toggle("urgent", sec <= 5);
+      timeBar.hidden = false;
+      countdownNum.textContent = String(sec);
+      ringFill.style.strokeDashoffset = String(100 * (1 - frac));
+      timeBarFill.style.transform = "scaleX(" + frac + ")";
+      for (const el of [countdownEl, timeBar]) {
+        el.classList.toggle("urgent", urgent);
+        el.classList.toggle("warn", warn);
+      }
       countdownEl.setAttribute("aria-label", sec + " seconds remaining");
     }
 
     function syncCountdownTick() {
-      const active = state && state.phase === "QUESTION" && state.countdown &&
-        state.countdown.deadlineMs != null;
+      const active = !!activeCountdown();
       if (active && countdownTickTimer === null) {
         countdownTickTimer = setInterval(paintCountdown, 250);
       } else if (!active && countdownTickTimer !== null) {

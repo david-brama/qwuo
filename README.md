@@ -288,7 +288,7 @@ Timers are optional and only apply in the **QUESTION** phase.
 |-----------------|----------|
 | unset | Host-paced only (classic) |
 | `0` | Explicitly off (use on a question to opt out of a positive default) |
-| `> 0` | Server starts a deadline; UIs show remaining whole seconds |
+| `> 0` | Server starts a deadline; UIs show remaining whole seconds. The projector shows a large ring with the seconds in the header and a full-width bar under it (amber at 10 s, red at 5 s); both are hidden when answers are locked |
 
 When the deadline hits, the session advances **QUESTION → CORRECT** with the same scoring as host **Next** (unanswered = 0). Host Next/Back still work anytime. **Back** from CORRECT does **not** restart the timer (the question is read-only once its answer was shown); re-entering a not-yet-revealed QUESTION starts a **new full** timer (does not resume leftover seconds).
 
@@ -458,6 +458,7 @@ openspec/                    Specs and archived change proposals
 - a choice, the question, the explanation, a leaderboard row or the join URL is outside the viewport, clipped by a parent, cut inside its box, or covered by another element
 - the lobby QR is outside the viewport, covered, smaller than about `min(65vh, 45vw)`, or does not decode (jsQR) to the join URL
 - the footer wraps, or question/choice text is below the floor (1080p: 40 px / 30 px; other sizes: 24 px / 20 px)
+- the countdown is missing on a timed question, shown when answers are locked, smaller than 44 px (1080p) / 28 px, or its ring or time bar overlaps the logo, QR, counter or slide
 - the leaderboard does not show the top 10 (or text is below 40 px at 1080p / 22 px elsewhere), or END has no podium
 
 ```bash
