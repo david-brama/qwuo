@@ -5,3 +5,6 @@ node_modules/
 .env
 .env.*
 .DS_Store
+# Tunnel settings (may hold TUNNEL_TOKEN); the example is committed
+.env.tunnel
+!.env.tunnel.example

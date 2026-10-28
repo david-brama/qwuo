@@ -5,16 +5,21 @@
 #   deno task start:tunnel
 #   PUBLIC_URL=https://… ./scripts/start-with-tunnel.sh   # skip tunnel
 #
+# Settings come from the environment, then from .env.tunnel in the repo root
+# (gitignored; see .env.tunnel.example). The environment wins over the file.
+#
 # Tunnel kinds (first match wins):
 #   TUNNEL_TOKEN + PUBLIC_URL   named tunnel, fixed hostname (cloudflared tunnel run;
 #                               token from the Cloudflare dashboard; never printed)
-#   TUNNEL_NAME  + PUBLIC_URL   named tunnel from ~/.cloudflared credentials (native only)
+#   TUNNEL_NAME  + PUBLIC_URL   named tunnel from ~/.cloudflared credentials (native only;
+#                               optional TUNNEL_CRED_FILE)
 #   PUBLIC_URL only             no cloudflared (you run the tunnel yourself)
 #   nothing                     quick tunnel (random *.trycloudflare.com, changes on restart)
+# If a named tunnel fails its health check, the script falls back to a quick tunnel.
 #
 # Env: PLAYER_PORT (3001), PROJECTOR_PORT (3000), PUBLIC_URL, QUIZ_PATH, QUIZ_FILTER, QUIZ_IDS,
 #      URL_WAIT_SECS (30), TUNNEL_MODE (docker|native|auto; default auto: docker compose, else native)
-#      HEALTH_CHECK (1; 0 = skip), HEALTH_WAIT_SECS (60), SUPERVISE_INTERVAL (2), TUNNEL_RESTART_DELAY (3)
+#      TUNNEL_ENV_FILE (.env.tunnel), HEALTH_CHECK (1; 0 = skip), HEALTH_WAIT_SECS (60), SUPERVISE_INTERVAL (2), TUNNEL_RESTART_DELAY (3)
 # Extra args are forwarded to the app (quote spaced filters), e.g.:
 #   ./scripts/start-with-tunnel.sh -- --filter live=true --filter "domain=Tool Design & MCP Integration"
 set -euo pipefail
@@ -33,11 +38,13 @@ HEALTH_CHECK="${HEALTH_CHECK:-1}"
 HEALTH_WAIT_SECS="${HEALTH_WAIT_SECS:-60}"
 SUPERVISE_INTERVAL="${SUPERVISE_INTERVAL:-2}"
 TUNNEL_RESTART_DELAY="${TUNNEL_RESTART_DELAY:-3}"
+TUNNEL_ENV_FILE="${TUNNEL_ENV_FILE:-${ROOT}/.env.tunnel}"
 
 CLOUDFLARED_PID=""
 DENO_PID=""
 TUNNEL_LOG=""
 APP_LOG=""
+CF_CONFIG=""
 OWNED_TUNNEL=0
 TUNNEL_BACKEND=""
 TUNNEL_KIND=""
@@ -67,7 +74,7 @@ cleanup() {
 
   stop_tunnel
 
-  for f in "${TUNNEL_LOG}" "${APP_LOG}"; do
+  for f in "${TUNNEL_LOG}" "${APP_LOG}" "${CF_CONFIG}"; do
     if [[ -n "${f}" && -f "${f}" ]]; then
       rm -f "${f}"
     fi
@@ -130,17 +137,35 @@ launch_tunnel() {
   else
     origin="http://127.0.0.1:${PLAYER_PORT}"
     echo "Starting cloudflared (native, ${TUNNEL_KIND}) → ${origin}"
+    # Own config file: never pick up ~/.cloudflared/config.yml (its tunnel id
+    # or ingress belongs to other projects).
+    if [[ -z "${CF_CONFIG}" ]]; then
+      CF_CONFIG="$(mktemp -t ltq-cloudflared.XXXXXX)"
+      printf 'no-autoupdate: true\n' >"${CF_CONFIG}"
+    fi
+    # cloudflared also reads TUNNEL_NAME (--name: create + route a tunnel!),
+    # TUNNEL_TOKEN and TUNNEL_CRED_FILE from its environment: pass only what
+    # this kind needs.
     case "${TUNNEL_KIND}" in
       quick)
-        cloudflared tunnel --no-autoupdate --url "${origin}" >"${TUNNEL_LOG}" 2>&1 &
+        env -u TUNNEL_TOKEN -u TUNNEL_NAME -u TUNNEL_CRED_FILE \
+          cloudflared tunnel --no-autoupdate --config "${CF_CONFIG}" --url "${origin}" \
+          >"${TUNNEL_LOG}" 2>&1 &
         ;;
       token)
         # Token is read from the TUNNEL_TOKEN env var (kept off the command line)
-        cloudflared tunnel --no-autoupdate run >"${TUNNEL_LOG}" 2>&1 &
+        env -u TUNNEL_NAME -u TUNNEL_CRED_FILE \
+          cloudflared tunnel --no-autoupdate --config "${CF_CONFIG}" run \
+          >"${TUNNEL_LOG}" 2>&1 &
         ;;
       named)
-        cloudflared tunnel --no-autoupdate run --url "${origin}" "${TUNNEL_NAME}" \
-          >"${TUNNEL_LOG}" 2>&1 &
+        local cred=()
+        if [[ -n "${TUNNEL_CRED_FILE:-}" ]]; then
+          cred=(--credentials-file "${TUNNEL_CRED_FILE}")
+        fi
+        env -u TUNNEL_TOKEN -u TUNNEL_NAME -u TUNNEL_CRED_FILE \
+          cloudflared tunnel --no-autoupdate --config "${CF_CONFIG}" run --url "${origin}" \
+          ${cred[@]+"${cred[@]}"} "${TUNNEL_NAME}" >"${TUNNEL_LOG}" 2>&1 &
         ;;
     esac
   fi
@@ -225,7 +250,8 @@ wait_http_ok() {
   return 1
 }
 
-# Check the app answers locally and through PUBLIC_URL. Returns 1 on failure.
+# Check the app answers locally and through PUBLIC_URL.
+# Returns 1 if the app fails, 2 if only PUBLIC_URL fails.
 health_check() {
   if [[ "${HEALTH_CHECK}" == "0" ]]; then
     echo "Health check skipped (HEALTH_CHECK=0)"
@@ -253,7 +279,7 @@ health_check() {
       "  ${PUBLIC_URL}${path}" \
       "Phones will NOT be able to join. Check the tunnel / PUBLIC_URL." \
       "(Set HEALTH_CHECK=0 to start anyway.)"
-    return 1
+    return 2
   fi
   echo "Health check OK: phones can reach ${PUBLIC_URL}"
   return 0
@@ -296,7 +322,7 @@ handle_tunnel_exit() {
         "session, roster and scores are restored from the snapshot)." \
         "Phones on the old URL must RESCAN the QR and JOIN AGAIN (new origin =" \
         "new browser storage, so their old player and score are not linked)." \
-        "Use a named tunnel (TUNNEL_TOKEN) to avoid this."
+        "Use a named tunnel (.env.tunnel, see README) to avoid this."
       PUBLIC_URL="${PARSED_URL}"
       export PUBLIC_URL
       restart_app
@@ -305,8 +331,43 @@ handle_tunnel_exit() {
   health_check || loud "Tunnel restarted but the health check failed; will keep watching."
 }
 
+warn_quick_tunnel() {
+  loud "QUICK TUNNEL (no named tunnel${1:+: $1})." \
+    "The join URL and the lobby QR CHANGE on EVERY restart of this script" \
+    "or of cloudflared. Phones must then rescan the QR and join again." \
+    "Do not print or share this URL ahead of time." \
+    "For a fixed URL set up a named tunnel: README → Before the course."
+}
+
+# Start a quick tunnel and set PUBLIC_URL from it ($1 = fatal|soft).
+start_quick_tunnel() {
+  wait_for_public_url "$1" || return 1
+  PUBLIC_URL="${PARSED_URL}"
+  export PUBLIC_URL
+}
+
+# The named tunnel failed its health check: replace it with a quick tunnel
+# and restart the app with the new PUBLIC_URL (same session).
+fall_back_to_quick() {
+  loud "NAMED TUNNEL FAILED: ${PUBLIC_URL} does not answer." \
+    "Falling back to a QUICK tunnel so the course can start."
+  stop_tunnel
+  TUNNEL_KIND="quick"
+  unset TUNNEL_TOKEN COMPOSE_PROFILES
+  COMPOSE_SERVICE="cloudflared"
+  launch_tunnel
+  start_quick_tunnel fatal
+  warn_quick_tunnel "the named tunnel failed"
+  restart_app
+}
+
 if ! command -v deno >/dev/null 2>&1; then
   die "deno not found on PATH. Install: https://deno.land"
+fi
+
+load_tunnel_env "${TUNNEL_ENV_FILE}"
+if [[ -n "${LOADED_TUNNEL_KEYS}" ]]; then
+  echo "Tunnel settings from ${TUNNEL_ENV_FILE}: ${LOADED_TUNNEL_KEYS}"
 fi
 
 # Pick the tunnel kind
@@ -400,13 +461,13 @@ EOF
 
   launch_tunnel
   if [[ "${TUNNEL_KIND}" == "quick" ]]; then
-    wait_for_public_url fatal
-    PUBLIC_URL="${PARSED_URL}"
+    start_quick_tunnel fatal
+    warn_quick_tunnel "not configured"
   else
     PUBLIC_URL="${PUBLIC_URL%/}"
+    export PUBLIC_URL
     echo "Named tunnel (${TUNNEL_KIND}); fixed hostname ${PUBLIC_URL}"
   fi
-  export PUBLIC_URL
 fi
 
 export PLAYER_PORT PROJECTOR_PORT
@@ -418,7 +479,14 @@ echo "  Ctrl+C stops app and tunnel"
 echo
 
 start_app
-health_check || exit 1
+health_rc=0
+health_check || health_rc=$?
+if [[ "${health_rc}" -eq 2 && ( "${TUNNEL_KIND}" == "token" || "${TUNNEL_KIND}" == "named" ) ]]; then
+  fall_back_to_quick
+  health_check || exit 1
+elif [[ "${health_rc}" -ne 0 ]]; then
+  exit 1
+fi
 
 # Supervise: exit with the app's code if it stops; restart cloudflared if it dies.
 while true; do
