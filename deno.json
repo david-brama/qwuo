@@ -4,7 +4,8 @@
     "start:tunnel": "./scripts/start-with-tunnel.sh",
     "dev": "deno run -P --watch main.ts",
     "test": "deno test -A src/ scripts/",
-    "test:ui": "deno run -A scripts/ui_check.ts"
+    "test:ui": "deno run -A scripts/ui_check.ts",
+    "quiz:lengths": "deno run --allow-read --allow-env=QUIZ_PATH scripts/choice_lengths.ts"
   },
   "permissions": {
     "default": {
