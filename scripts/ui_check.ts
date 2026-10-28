@@ -717,7 +717,7 @@ async function checkPhoneResult(
 }
 
 // --------------------------------------------------------------------------
-// Auto-hiding host controls and the Reset confirm
+// Auto-hiding host controls and the Reset confirm (run from END)
 
 async function checkHostChrome(
   app: App,
@@ -725,6 +725,7 @@ async function checkHostChrome(
   vp: string,
   shot: (page: Page, name: string) => Promise<void>,
   confirmReset: boolean,
+  clickerKeys: boolean,
 ): Promise<string[]> {
   const fails: string[] = [];
   const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -756,6 +757,17 @@ async function checkHostChrome(
   await page.keyboard.press("Shift");
   await pause(400);
   if (!(await controlsShown())) fails.push("not shown again on a key press");
+  if (clickerKeys) {
+    // Clicker Back / Next keys wake the controls and still navigate
+    for (const [key, want] of [["ArrowLeft", "LEADERBOARD"], ["PageDown", "END"]]) {
+      await pause(3600);
+      if (await controlsShown()) fails.push(`still shown after 3.6 s idle (before ${key})`);
+      await page.keyboard.press(key);
+      await pause(400);
+      if (!(await controlsShown())) fails.push(`not shown again on ${key}`);
+      if (await phase() !== want) fails.push(`${key}: phase ${await phase()}, want ${want}`);
+    }
+  }
 
   // Reset opens the in-page confirm; Enter / Escape / arrows do not reset
   const confirmOpen = () => page.isVisible("#reset-confirm");
@@ -1167,7 +1179,8 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
     lost.forEach((fs, i) => fs.forEach((f) => failures.push(`${pages[i].vp} reconnect: ${f}`)));
     // Last: ends with a confirmed Reset (session back in LOBBY)
     for (const { vp, page } of pages) {
-      for (const f of await checkHostChrome(app, page, vp, shot, vp === pages.at(-1)!.vp)) {
+      const first = vp === pages[0].vp, last = vp === pages.at(-1)!.vp;
+      for (const f of await checkHostChrome(app, page, vp, shot, last, first)) {
         failures.push(`${vp} host controls: ${f}`);
       }
     }

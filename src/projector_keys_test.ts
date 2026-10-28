@@ -56,3 +56,16 @@ Deno.test("keys: projector page embeds the same mapping", () => {
   assertEquals(html.includes(projectorKeyAction.toString()), true);
   assertEquals(html.includes(keyNavAllowed.toString()), true);
 });
+
+Deno.test("keys: every key press wakes the host controls before its action", () => {
+  const html = projectorHtml("https://example.test/s/x", "<svg></svg>");
+  const mapping = html.indexOf("const action = projectorKeyAction(");
+  const start = html.lastIndexOf('document.addEventListener("keydown"', mapping);
+  const handler = html.slice(start, html.indexOf("\n    });", start));
+  // Unconditional, before the Next/Back mapping can return early
+  const wake = handler.indexOf("showControls();");
+  assertEquals(wake > 0, true, handler);
+  assertEquals(wake < handler.indexOf("projectorKeyAction("), true, handler);
+  assertEquals(handler.indexOf("return", 0) > wake, true, handler);
+  assertEquals(handler.includes("postNav("), true, handler);
+});

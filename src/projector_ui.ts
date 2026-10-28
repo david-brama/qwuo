@@ -896,6 +896,8 @@ export function projectorHtml(
     }
 
     document.addEventListener("keydown", (e) => {
+      // Any key (clicker Next/Back too) wakes the host controls
+      showControls();
       const t = e.target instanceof Element ? e.target : null;
       const typing = !!(t && t.closest(
         'input, textarea, select, [contenteditable=""], [contenteditable="true"], #filter-panel',
@@ -906,11 +908,7 @@ export function projectorHtml(
         modalOpen: anyModalOpen(),
         onButton,
       });
-      if (!action) {
-        showControls();
-        return;
-      }
-      // Clicker presses do not flash the host controls at the audience
+      if (!action) return;
       e.preventDefault();
       const now = performance.now();
       if (!keyNavAllowed(now, lastKeyNavMs, KEY_NAV_DEBOUNCE_MS)) return;
@@ -961,7 +959,7 @@ export function projectorHtml(
     });
 
     // Host controls (footer buttons, slider) hide after a few idle seconds
-    // and come back on mouse movement or a non-navigation key
+    // and come back on mouse movement or any key (including Next/Back)
     const CONTROLS_IDLE_MS = 3000;
     let controlsTimer = null;
     let pointerInFooter = false;

@@ -66,7 +66,7 @@ LOBBY → QUESTION → CORRECT → EXPLAIN → LEADERBOARD → … → END
    ```
    It must print `Health check OK: phones can reach https://quiz.<domain>`. Environment variables win over `.env.tunnel`. If no named tunnel is set, or the named tunnel fails its health check, the script starts a **quick tunnel** and shows a loud `QUICK TUNNEL` warning: the URL and the QR then **change on every restart**. Do not continue with a quick tunnel by accident: fix the named tunnel, then start again.
 4. **Check the layout** on this laptop: `deno task test:ui` (about 2 minutes). It must end with `OK`.
-5. **Learn the keys** (keyboard or clicker) on the projector: → · PageDown · Space · Enter = **Next**; ← · PageUp = **Back**. No key does Reset.
+5. **Learn the keys** (keyboard or clicker) on the projector: → · PageDown · Space · Enter = **Next**; ← · PageUp = **Back**. Any key or mouse movement also shows the hidden host controls. No key does Reset.
 
 ---
 
@@ -510,7 +510,7 @@ openspec/                    Specs and archived change proposals
 - the footer wraps, or question/choice text is below the floor (1080p: 40 px / 30 px; other sizes: 24 px / 20 px)
 - CORRECT/EXPLAIN do not mark exactly one choice ✓, EXPLAIN does not show the question, EXPLAIN below 900 px tall shows more than the correct choice, or the explanation (choices) fall below 36 px (22 px) at 1080p / 28 px (14 px) elsewhere
 - the countdown is missing on a timed question, shown when answers are locked, smaller than 44 px (1080p) / 28 px, or its ring or time bar overlaps the logo, QR, counter or slide
-- the host controls do not hide after 3 s idle or do not come back on mouse movement / a key, or Reset does not use the in-page confirm (Enter/Escape cancel; a native dialog fails the check)
+- the host controls do not hide after 3 s idle or do not come back on mouse movement / any key (clicker Next/Back keys too, which must still navigate), or Reset does not use the in-page confirm (Enter/Escape cancel; a native dialog fails the check)
 - the reconnecting banner does not appear when `/api/state` fails twice in a row, appears after one failure, or does not clear on recovery
 - a presenter key does the wrong thing (→/PageDown/Space/Enter, ←/PageUp, double press, held key, keys on the slider or with the QR modal open, Reset-like keys)
 - the leaderboard does not show the top 10 (or text is below 40 px at 1080p / 22 px elsewhere), or END has no podium
