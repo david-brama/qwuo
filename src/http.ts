@@ -56,9 +56,23 @@ function logoMarkup(logoDataUrl: string | null): string {
   return `<img class="brand-logo" src="${src}" alt="" />`;
 }
 
-/** Join: 100/min per client IP. Answer: 200/min (poll-safe headroom). */
-const JOIN_LIMIT = { max: 100, windowMs: 60_000 };
-const ANSWER_LIMIT = { max: 200, windowMs: 60_000 };
+/**
+ * Rate limits. A whole classroom usually shares one NAT IP, so joins get a
+ * high per-IP ceiling and answers are limited per participant id (a player
+ * answers once per question; the cap only stops a single client spamming).
+ * The per-IP answer cap is a backstop for unknown/rotating ids.
+ */
+export type RateLimits = {
+  joinPerIp: { max: number; windowMs: number };
+  answerPerParticipant: { max: number; windowMs: number };
+  answerPerIp: { max: number; windowMs: number };
+};
+
+export const DEFAULT_RATE_LIMITS: RateLimits = {
+  joinPerIp: { max: 1200, windowMs: 60_000 },
+  answerPerParticipant: { max: 30, windowMs: 60_000 },
+  answerPerIp: { max: 6000, windowMs: 60_000 },
+};
 
 const SECURITY_HEADERS: Record<string, string> = {
   "x-content-type-options": "nosniff",
@@ -67,6 +81,7 @@ const SECURITY_HEADERS: Record<string, string> = {
     "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'",
 };
 
+/** Sliding-window limiter; stale keys are swept when the map grows large. */
 class RateLimiter {
   private hits = new Map<string, number[]>();
 
@@ -78,6 +93,7 @@ class RateLimiter {
   allow(key: string): boolean {
     const now = Date.now();
     const start = now - this.windowMs;
+    if (this.hits.size > 10_000) this.sweep(start);
     let times = this.hits.get(key) ?? [];
     times = times.filter((t) => t > start);
     if (times.length >= this.max) {
@@ -88,18 +104,34 @@ class RateLimiter {
     this.hits.set(key, times);
     return true;
   }
+
+  private sweep(start: number): void {
+    for (const [k, times] of this.hits) {
+      if (times.every((t) => t <= start)) this.hits.delete(k);
+    }
+  }
 }
 
-const joinLimiter = new RateLimiter(JOIN_LIMIT.max, JOIN_LIMIT.windowMs);
-const answerLimiter = new RateLimiter(ANSWER_LIMIT.max, ANSWER_LIMIT.windowMs);
-
-function clientKey(req: Request, info?: Deno.ServeHandlerInfo): string {
-  const cf = req.headers.get("cf-connecting-ip")?.trim();
-  if (cf) return `cf:${cf}`;
-  const xff = req.headers.get("x-forwarded-for");
-  if (xff) {
-    const first = xff.split(",")[0]?.trim();
-    if (first) return `xff:${first}`;
+/**
+ * Client IP for rate limiting. Uses the socket address unless
+ * `trustProxyHeader` (TRUST_PROXY_HEADER) names a header set by a trusted
+ * proxy. For `x-forwarded-for` the right-most entry is used (the one the
+ * nearest proxy appended); other headers are taken as a single value.
+ */
+export function clientKey(
+  req: Request,
+  info?: Deno.ServeHandlerInfo,
+  trustProxyHeader?: string | null,
+): string {
+  if (trustProxyHeader) {
+    const raw = req.headers.get(trustProxyHeader);
+    if (raw) {
+      const parts = raw.split(",").map((p) => p.trim()).filter(Boolean);
+      const ip = trustProxyHeader.toLowerCase() === "x-forwarded-for"
+        ? parts[parts.length - 1]
+        : parts[0];
+      if (ip) return `hdr:${ip}`;
+    }
   }
   const addr = info?.remoteAddr;
   if (addr && "hostname" in addr) return `ip:${addr.hostname}`;
@@ -360,13 +392,33 @@ export function createProjectorHandler(
   };
 }
 
+export type PlayerHandlerOptions = {
+  /** Header holding the real client IP (only set behind a trusted proxy). */
+  trustProxyHeader?: string | null;
+  rateLimits?: RateLimits;
+};
+
 export function createPlayerHandler(
   session: Session,
   sessionId: string,
   hooks?: SessionPersistHooks,
   logoDataUrl: string | null = null,
+  options: PlayerHandlerOptions = {},
 ) {
   const page = playerHtml(logoMarkup(logoDataUrl));
+  const limits = options.rateLimits ?? DEFAULT_RATE_LIMITS;
+  const joinLimiter = new RateLimiter(
+    limits.joinPerIp.max,
+    limits.joinPerIp.windowMs,
+  );
+  const answerIdLimiter = new RateLimiter(
+    limits.answerPerParticipant.max,
+    limits.answerPerParticipant.windowMs,
+  );
+  const answerIpLimiter = new RateLimiter(
+    limits.answerPerIp.max,
+    limits.answerPerIp.windowMs,
+  );
 
   return async (
     req: Request,
@@ -374,7 +426,7 @@ export function createPlayerHandler(
   ): Promise<Response> => {
     const url = new URL(req.url);
     const parsed = parseSessionPath(url.pathname);
-    const key = clientKey(req, info);
+    const key = clientKey(req, info, options.trustProxyHeader);
 
     try {
       if (!parsed || parsed.sessionId !== sessionId) {
@@ -391,6 +443,7 @@ export function createPlayerHandler(
       if (path === "/api/state") {
         if (req.method !== "GET") return methodNotAllowed();
         const id = url.searchParams.get("id");
+        if (id) session.markSeen(id);
         return json(session.playerState(id));
       }
 
@@ -406,18 +459,24 @@ export function createPlayerHandler(
 
       if (path === "/api/answer") {
         if (req.method !== "POST") return methodNotAllowed();
-        if (!answerLimiter.allow(key)) return tooManyRequests();
+        if (!answerIpLimiter.allow(key)) return tooManyRequests();
         const body = await readJson(req) as {
           id?: unknown;
           choiceIndex?: unknown;
         };
         const id = typeof body.id === "string" ? body.id : "";
+        // Only known ids get a bucket, so random ids cannot grow the map
+        if (session.getParticipant(id) && !answerIdLimiter.allow(`pid:${id}`)) {
+          return tooManyRequests();
+        }
         const choiceIndex = typeof body.choiceIndex === "number"
           ? body.choiceIndex
           : NaN;
-        const result = session.answer(id, choiceIndex);
+        session.answer(id, choiceIndex);
         await runHook("save", hooks?.save);
-        return json(result);
+        // No correct/incorrect here: phones learn it from /api/state once
+        // the answer is revealed, so nobody can tell neighbours early
+        return json({ choiceIndex, score: session.playerScore(id) });
       }
 
       // Host-only routes rejected on player port

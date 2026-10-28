@@ -1,5 +1,9 @@
 import type { MetadataFilter, Question, Quiz } from "./quiz.ts";
-import { filterQuestionsByMetadata } from "./quiz.ts";
+import {
+  choiceOrder,
+  filterQuestionsByMetadata,
+  remapChoiceLetters,
+} from "./quiz.ts";
 import { Session, type Phase } from "./session.ts";
 
 export const SNAPSHOT_VERSION = 2 as const;
@@ -40,6 +44,8 @@ export type SessionSnapshot = {
    * Omitted/null = no active deadline (or legacy snapshot).
    */
   questionDeadlineMs?: number | null;
+  /** Highest revealed question index; omitted in legacy snapshots. */
+  revealedThrough?: number;
 };
 
 const PHASES: ReadonlySet<string> = new Set([
@@ -117,6 +123,9 @@ export function sessionToSnapshot(
     ...(state.questionDeadlineMs != null
       ? { questionDeadlineMs: state.questionDeadlineMs }
       : {}),
+    ...(state.revealedThrough !== undefined
+      ? { revealedThrough: state.revealedThrough }
+      : {}),
   };
 }
 
@@ -148,14 +157,17 @@ export function sessionFromSnapshot(
     };
   });
   // Restore play choice order from snapshot; attach metadata + countdown from bank.
+  // Explain is re-derived from the bank text + snapshot order so choice letters
+  // match the display order (also fixes snapshots saved before letter remap).
   const effectiveQuestions: Question[] = snapshot.effectiveQuestions.map(
     (q, i) => {
       const bankQ = expected[i]!;
+      const order = choiceOrder(bankQ.choices, q.choices);
       const out: Question = {
         text: q.text,
         choices: [...q.choices],
         correct: q.correct,
-        explain: q.explain,
+        explain: order ? remapChoiceLetters(bankQ.explain, order) : q.explain,
       };
       if (bankQ.countdownSeconds !== undefined) {
         out.countdownSeconds = bankQ.countdownSeconds;
@@ -174,6 +186,7 @@ export function sessionFromSnapshot(
     effectiveQuestions,
     runtimeFilters,
     questionDeadlineMs: snapshot.questionDeadlineMs ?? null,
+    revealedThrough: snapshot.revealedThrough,
   });
 }
 
@@ -214,6 +227,13 @@ export function isValidSnapshot(data: unknown): data is SessionSnapshot {
       if (typeof fr.key !== "string" || !fr.key.trim()) return false;
       if (typeof fr.value !== "string") return false;
     }
+  }
+  if (
+    o.revealedThrough !== undefined &&
+    (typeof o.revealedThrough !== "number" ||
+      !Number.isInteger(o.revealedThrough) || o.revealedThrough < -1)
+  ) {
+    return false;
   }
   if (o.questionDeadlineMs !== undefined && o.questionDeadlineMs !== null) {
     if (

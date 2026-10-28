@@ -4,9 +4,11 @@ import {
 } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
   loadConfig,
+  parseCliArgs,
   parseFilterCliArgs,
   parseQuizFilterEnv,
   resolveFilters,
+  resolveIds,
 } from "./config.ts";
 
 Deno.test("parseQuizFilterEnv: empty / undefined", () => {
@@ -121,4 +123,40 @@ Deno.test("loadConfig: filters from options (no Deno.env QUIZ_FILTER side effect
     { key: "domain", value: "A" },
     { key: "live", value: "true" },
   ]);
+});
+
+Deno.test("loadConfig: TRUST_PROXY_HEADER off by default, lowercased when set", () => {
+  const prev = Deno.env.get("TRUST_PROXY_HEADER");
+  try {
+    Deno.env.delete("TRUST_PROXY_HEADER");
+    assertEquals(loadConfig({ args: [], envFilter: "" }).trustProxyHeader, null);
+    Deno.env.set("TRUST_PROXY_HEADER", " CF-Connecting-IP ");
+    assertEquals(
+      loadConfig({ args: [], envFilter: "" }).trustProxyHeader,
+      "cf-connecting-ip",
+    );
+  } finally {
+    if (prev === undefined) Deno.env.delete("TRUST_PROXY_HEADER");
+    else Deno.env.set("TRUST_PROXY_HEADER", prev);
+  }
+});
+
+Deno.test("parseCliArgs: --ids and --ids= with filters", () => {
+  assertEquals(
+    parseCliArgs(["--ids", "Q12,Q1", "--filter", "live=true", "--ids=Q7"]),
+    { filters: [{ key: "live", value: "true" }], ids: ["Q12", "Q1", "Q7"] },
+  );
+  assertThrows(() => parseCliArgs(["--ids"]), Error, "--ids requires");
+  assertThrows(() => parseCliArgs(["--ids", "--filter"]), Error, "--ids requires");
+});
+
+Deno.test("resolveIds: QUIZ_IDS env then --ids CLI", () => {
+  assertEquals(resolveIds("Q1, Q7", ["--ids", "Q12"]), ["Q1", "Q7", "Q12"]);
+  assertEquals(resolveIds(undefined, []), []);
+});
+
+Deno.test("loadConfig: ids from options", () => {
+  const cfg = loadConfig({ args: ["--ids", "Q3"], envFilter: "", envIds: "Q9,Q2" });
+  assertEquals(cfg.ids, ["Q9", "Q2", "Q3"]);
+  assertEquals(cfg.filters, []);
 });

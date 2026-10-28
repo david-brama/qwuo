@@ -4,6 +4,11 @@ import {
   purifyBundleScript,
   MD_RENDER_JS,
 } from "./markdown.ts";
+import {
+  KEY_NAV_DEBOUNCE_MS,
+  keyNavAllowed,
+  projectorKeyAction,
+} from "./projector_keys.ts";
 
 export function projectorHtml(
   joinUrl: string,
@@ -22,8 +27,6 @@ export function projectorHtml(
   <div class="shell${logoHtml ? " has-logo" : ""}" id="shell">
     <!-- Fixed/absolute chrome — out of flex flow -->
     <div class="chrome" aria-hidden="false">
-      ${logoHtml}
-      <div id="qr-small" class="qr-small" hidden title="Show join QR" role="button" tabindex="0">${qrSvgMarkup}</div>
       <div id="qr-modal" class="qr-modal" hidden>
         <div class="qr-modal-backdrop" data-close></div>
         <div class="qr-modal-panel" role="dialog" aria-label="Join QR code">
@@ -31,6 +34,17 @@ export function projectorHtml(
           <div class="lobby-sub">Scan to join on your phone</div>
           <div class="qr-large">${qrSvgMarkup}</div>
           <div class="join-url">${joinUrl.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")}</div>
+        </div>
+      </div>
+      <div id="reset-confirm" class="confirm-modal" hidden>
+        <div class="confirm-backdrop" data-cancel></div>
+        <div class="confirm-panel" role="alertdialog" aria-modal="true" aria-labelledby="reset-title" aria-describedby="reset-desc">
+          <h2 class="confirm-title" id="reset-title">Reset the session?</h2>
+          <p class="confirm-text" id="reset-desc">Return to the lobby and clear filters. Participants stay joined; all scores reset to 0.</p>
+          <div class="confirm-actions">
+            <button type="button" id="reset-cancel" class="ghost-btn" data-cancel>Cancel</button>
+            <button type="button" id="reset-ok" class="danger-solid-btn">Reset scores</button>
+          </div>
         </div>
       </div>
       <button type="button" class="filter-panel-toggle" id="filter-toggle" hidden aria-expanded="false" aria-controls="filter-panel">Filter</button>
@@ -51,20 +65,37 @@ export function projectorHtml(
       </aside>
     </div>
 
+    <div id="conn-banner" class="conn-banner" role="alert" hidden>
+      <span class="conn-dot" aria-hidden="true"></span>
+      <span id="conn-text">Connection lost · reconnecting…</span>
+    </div>
+
     <!-- Viewport flex column: header | main | footer -->
     <header class="header" id="header">
-      <div>
+      <div class="header-left">
         <div class="phase-label" id="phase-label">LOBBY</div>
         <h1 id="quiz-title">Loading…</h1>
       </div>
-      <div class="countdown" id="countdown" hidden aria-live="polite" aria-atomic="true"></div>
+      <div class="header-right">
+        <div class="answered" id="answered" hidden></div>
+        <div class="countdown" id="countdown" hidden role="timer" aria-atomic="true">
+          <svg class="countdown-ring" viewBox="0 0 100 100" aria-hidden="true">
+            <circle class="ring-track" cx="50" cy="50" r="44" />
+            <circle class="ring-fill" id="ring-fill" cx="50" cy="50" r="44" pathLength="100" />
+          </svg>
+          <span class="countdown-num" id="countdown-num"></span>
+        </div>
+        ${logoHtml}
+        <div id="qr-small" class="qr-small" hidden title="Show join QR" role="button" tabindex="0">${qrSvgMarkup}</div>
+      </div>
+      <div class="time-bar" id="time-bar" hidden aria-hidden="true"><div class="time-bar-fill" id="time-bar-fill"></div></div>
     </header>
     <main class="main" id="main"></main>
     <footer class="footer" id="footer">
       <div class="status-line" id="status"></div>
       <div class="footer-right">
         <label class="font-slider" title="Question text size">
-          Text size
+          <span class="font-slider-label">Text size</span>
           <input type="range" id="font-scale" min="0.7" max="1.6" step="0.05" value="1" />
         </label>
         <button type="button" id="fs-btn" class="ghost-btn" title="Toggle fullscreen">Fullscreen</button>
@@ -109,6 +140,15 @@ export function projectorHtml(
     const filterError = document.getElementById("filter-error");
     const filterToggle = document.getElementById("filter-toggle");
     const countdownEl = document.getElementById("countdown");
+    const countdownNum = document.getElementById("countdown-num");
+    const ringFill = document.getElementById("ring-fill");
+    const timeBar = document.getElementById("time-bar");
+    const timeBarFill = document.getElementById("time-bar-fill");
+    const answeredEl = document.getElementById("answered");
+    const footer = document.getElementById("footer");
+    const resetConfirm = document.getElementById("reset-confirm");
+    const resetCancel = document.getElementById("reset-cancel");
+    const resetOk = document.getElementById("reset-ok");
 
     let state = null;
     let navBusy = false;
@@ -153,6 +193,64 @@ export function projectorHtml(
       main.style.setProperty("--q-scale", String(n));
       fontScale.value = String(n);
       try { localStorage.setItem("projector-q-scale", String(n)); } catch (_) {}
+      fitMain();
+    }
+
+    /** Smallest explanation font (px) before EXPLAIN drops the wrong choices. */
+    function explainMinPx() {
+      return innerHeight >= 1000 ? 36 : 28;
+    }
+
+    /**
+     * Fit the slide. EXPLAIN on short screens, or when fitting would push the
+     * explanation below explainMinPx(), shows only the correct choice.
+     */
+    function fitMain() {
+      const explain = main.querySelector(".explain-slide");
+      if (explain) explain.classList.toggle("explain-compact", innerHeight < 900);
+      fitSlide();
+      if (!explain || explain.classList.contains("explain-compact")) return;
+      const box = explain.querySelector(".explain-box");
+      if (box && parseFloat(getComputedStyle(box).fontSize) < explainMinPx()) {
+        explain.classList.add("explain-compact");
+        fitSlide();
+      }
+    }
+
+    /**
+     * Shrink the slide (fonts, QR) via --fit until #main no longer
+     * overflows. Sizes in CSS are the maximum; nothing ever scrolls.
+     */
+    function fitSlide() {
+      // scrollHeight rounds to whole px; also compare exact child boxes
+      const over = () => {
+        if (
+          main.scrollHeight > main.clientHeight ||
+          main.scrollWidth > main.clientWidth
+        ) return true;
+        const box = main.getBoundingClientRect();
+        for (const el of main.children) {
+          const r = el.getBoundingClientRect();
+          if (r.top < box.top - 0.25 || r.bottom > box.bottom - 1) return true;
+        }
+        return false;
+      };
+      main.style.setProperty("--fit", "1");
+      if (!over()) return;
+      let lo = 0.3;
+      let hi = 1;
+      for (let i = 0; i < 9; i++) {
+        const mid = (lo + hi) / 2;
+        main.style.setProperty("--fit", String(mid));
+        if (over()) hi = mid;
+        else lo = mid;
+      }
+      main.style.setProperty("--fit", String(lo));
+    }
+
+    window.addEventListener("resize", fitMain);
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(fitMain);
     }
 
     try {
@@ -218,10 +316,14 @@ export function projectorHtml(
         .replace(/"/g, "&quot;");
     }
 
+    /** Correct choice: ✓ mark, bold text and a thick outline — not colour only. */
     function renderChoices(choices, highlightIndex) {
       return choices.map((c, i) => {
-        const cls = highlightIndex === i ? "choice highlight" : "choice";
-        return \`<div class="\${cls}"><span class="choice-letter">\${LETTERS[i] || i + 1}</span>\${esc(c)}</div>\`;
+        const hi = highlightIndex === i;
+        const mark = hi
+          ? '<span class="choice-mark" aria-label="Correct answer">✓</span>'
+          : "";
+        return \`<div class="choice\${hi ? " highlight" : ""}"><span class="choice-letter">\${LETTERS[i] || i + 1}</span><span class="choice-text">\${esc(c)}</span>\${mark}</div>\`;
       }).join("");
     }
 
@@ -233,18 +335,15 @@ export function projectorHtml(
     }
 
     /**
-     * Fixed left rail — outside the question column so it never gets clipped
-     * by overflow or squeezed by long question text.
+     * Slide metadata as one header line (values only; keys in the tooltip)
+     * so it costs no slide height.
      */
-    function renderSlideMetadata(entries) {
-      if (!entries || !entries.length) return "";
-      const cards = entries.map((e) =>
-        \`<div class="slide-meta-card">
-          <div class="slide-meta-key">\${esc(formatMetaLabel(e.key))}</div>
-          <div class="slide-meta-value">\${esc(e.value)}</div>
-        </div>\`
-      ).join("");
-      return \`<aside class="slide-meta-rail" aria-label="Question metadata">\${cards}</aside>\`;
+    function slideMetadataLine(entries) {
+      if (!entries || !entries.length) return null;
+      return {
+        text: entries.map((e) => e.value).join("  ·  "),
+        title: entries.map((e) => formatMetaLabel(e.key) + ": " + e.value).join("\\n"),
+      };
     }
 
     function filtersSignature(filters) {
@@ -484,7 +583,7 @@ export function projectorHtml(
       backBtn.disabled = !state.canGoBack;
       nextBtn.disabled = state.phase === "END";
       nextBtn.textContent = state.phase === "END" ? "Done" : "Next";
-      // Reset: back to LOBBY, clear filters, keep participants/scores
+      // Reset: back to LOBBY, clear filters, keep participants, zero scores
       resetBtn.disabled = false;
     }
 
@@ -493,33 +592,56 @@ export function projectorHtml(
       return state && state.questionCount != null ? state.questionCount : 0;
     }
 
+    /** Questions scored so far (revealed), not the whole playable set. */
+    function questionsAsked() {
+      return state && typeof state.questionsAsked === "number"
+        ? state.questionsAsked
+        : 0;
+    }
+
     function formatScore(n) {
-      const total = playableCount();
-      return n + "/" + total;
+      return n + '<span class="lb-of">/' + questionsAsked() + "</span>";
     }
 
-    function remainingSeconds(deadlineMs) {
-      return Math.max(0, Math.ceil((deadlineMs - Date.now()) / 1000));
+    /** Running QUESTION countdown, or null (none, or answers locked). */
+    function activeCountdown() {
+      if (!state || state.phase !== "QUESTION" || state.answersLocked) return null;
+      const c = state.countdown;
+      return c && c.deadlineMs != null ? c : null;
     }
 
+    /** Ring + large seconds in the header, full-width bar under it. */
     function paintCountdown() {
-      const c = state && state.phase === "QUESTION" ? state.countdown : null;
-      if (!c || c.deadlineMs == null) {
+      const c = activeCountdown();
+      if (!c) {
         countdownEl.hidden = true;
-        countdownEl.textContent = "";
-        countdownEl.classList.remove("urgent");
+        timeBar.hidden = true;
+        countdownNum.textContent = "";
+        countdownEl.classList.remove("warn", "urgent");
+        timeBar.classList.remove("warn", "urgent");
         return;
       }
-      const sec = remainingSeconds(c.deadlineMs);
+      const leftMs = Math.max(0, c.deadlineMs - Date.now());
+      const sec = Math.ceil(leftMs / 1000);
+      const frac = c.totalSeconds > 0
+        ? Math.min(1, leftMs / (c.totalSeconds * 1000))
+        : 0;
+      const urgent = sec <= 5;
+      const warn = !urgent && sec <= 10;
       countdownEl.hidden = false;
-      countdownEl.textContent = String(sec);
-      countdownEl.classList.toggle("urgent", sec <= 5);
+      timeBar.hidden = false;
+      countdownNum.textContent = String(sec);
+      ringFill.style.strokeDashoffset = String(100 * (1 - frac));
+      timeBarFill.style.transform = "scaleX(" + frac + ")";
+      for (const el of [countdownEl, timeBar]) {
+        el.classList.toggle("urgent", urgent);
+        el.classList.toggle("warn", warn);
+      }
       countdownEl.setAttribute("aria-label", sec + " seconds remaining");
     }
 
     function syncCountdownTick() {
-      const active = state && state.phase === "QUESTION" && state.countdown &&
-        state.countdown.deadlineMs != null;
+      const active = !!activeCountdown();
       if (active && countdownTickTimer === null) {
         countdownTickTimer = setInterval(paintCountdown, 250);
       } else if (!active && countdownTickTimer !== null) {
@@ -531,8 +653,6 @@ export function projectorHtml(
 
     function render() {
       if (!state) return;
-      quizTitle.textContent = state.title;
-      phaseLabel.textContent = state.phase;
       updateNavButtons();
       syncCountdownTick();
 
@@ -542,104 +662,184 @@ export function projectorHtml(
 
       const q = state.question;
       const total = playableCount();
-      const metaHtml = (state.phase === "QUESTION" || state.phase === "CORRECT" ||
-        state.phase === "EXPLAIN" || state.phase === "LEADERBOARD")
-        ? renderSlideMetadata(q && q.slideMetadata)
-        : "";
-      const hasMeta = !!metaHtml;
+      const qNo = state.questionIndex + 1;
+      const inSlide = state.phase === "QUESTION" || state.phase === "CORRECT" ||
+        state.phase === "EXPLAIN" || state.phase === "LEADERBOARD";
+      const meta = inSlide ? slideMetadataLine(q && q.slideMetadata) : null;
+
+      const phaseText = {
+        LOBBY: "Lobby · scan to join",
+        QUESTION: \`Question \${qNo} of \${total}\${state.answersLocked ? " · Answers closed" : ""}\`,
+        CORRECT: \`Answer · Question \${qNo} of \${total}\`,
+        EXPLAIN: \`Explanation · Question \${qNo} of \${total}\`,
+        LEADERBOARD: \`Leaderboard · after question \${qNo} of \${total}\`,
+        END: "Session complete",
+      }[state.phase] || state.phase;
+      phaseLabel.textContent = phaseText;
+      quizTitle.textContent = meta ? meta.text : state.title;
+      quizTitle.title = meta ? meta.title : "";
+      quizTitle.classList.toggle("is-meta", !!meta);
+      document.title = state.title + " — Projector";
+
       const isLb = state.phase === "LEADERBOARD" || state.phase === "END";
       const mainClasses = ["main"];
-      if (isLobby) mainClasses.push("lobby-main", "has-filter-panel");
-      else if (isLb) {
-        mainClasses.push("lb-main");
-        if (hasMeta) mainClasses.push("has-meta-rail");
-      } else if (hasMeta) {
-        mainClasses.push("has-meta-rail");
-      }
+      if (isLobby) mainClasses.push("lobby-main");
+      else if (isLb) mainClasses.push("lb-main");
       main.className = mainClasses.join(" ");
+      shell.classList.toggle("is-lobby", isLobby);
 
+      const num = (v) => typeof v === "number" ? v : 0;
+      // Engagement (≥2 answers in the last 4 questions) — host-only footer
+      const activeN = num(state.activeUserCount);
+      const onlineN = num(state.onlineCount);
+      const answeredN = num(state.answeredCount);
+      const activePart = isLobby ? "" : \` · \${activeN} active\`;
       const countPart = state.phase === "END"
-        ? "Session complete · " + total + " question" + (total === 1 ? "" : "s")
+        ? "Session complete · " + total + " question" + (total === 1 ? "" : "s") +
+          activePart
         : state.phase === "LOBBY"
-        ? \`\${state.participantCount} joined · \${total} question\${total === 1 ? "" : "s"}\`
-        : \`\${state.participantCount} joined · Q\${state.questionIndex + 1}/\${total}\`;
+        ? \`\${state.participantCount} joined · \${onlineN} online · \${total} question\${total === 1 ? "" : "s"}\`
+        : \`\${state.participantCount} joined · \${onlineN} online\${activePart} · Q\${qNo}/\${total}\`;
       statusEl.textContent = countPart;
 
-      renderFilterPanel(false);
+      // X of N: answers to this question of those who can answer it
+      const showAnswered = state.phase === "QUESTION" || state.phase === "CORRECT" ||
+        state.phase === "EXPLAIN";
+      answeredEl.hidden = !showAnswered;
+      answeredEl.innerHTML = showAnswered
+        ? \`<span class="answered-num"><span class="score">\${answeredN}</span> of <span class="score">\${onlineN}</span></span><span class="answered-label">answered</span>\`
+        : "";
+      answeredEl.title = showAnswered
+        ? "Answers to this question, of participants online now (polled in the last 15 s) or already answered"
+        : "";
 
+      renderFilterPanel(false);
+      main.innerHTML = slideHtml(q, total, onlineN);
+      fitMain();
+    }
+
+    function leaderboardRows(entries) {
+      return entries.map((e) => \`
+        <div class="lb-row \${e.rank <= 3 ? "top3" : ""}">
+          <div class="lb-rank">#\${e.rank}</div>
+          <div class="lb-name">\${esc(e.name)}</div>
+          <div class="lb-score">\${formatScore(e.score)}</div>
+        </div>
+      \`).join("");
+    }
+
+    /** END: top three on a podium (2nd · 1st · 3rd), places 4–10 below. */
+    function podiumHtml(entries) {
+      const top = entries.slice(0, 3);
+      const order = [top[1], top[0], top[2]].filter(Boolean);
+      const places = order.map((e) => \`
+        <div class="podium-place place-\${Math.min(e.rank, 3)}">
+          <div class="podium-name">\${esc(e.name)}</div>
+          <div class="podium-score">\${formatScore(e.score)}</div>
+          <div class="podium-block"><span class="podium-rank">\${e.rank}</span></div>
+        </div>
+      \`).join("");
+      const rest = entries.slice(3, 10);
+      return \`
+        <div class="podium">\${places}</div>
+        \${rest.length ? \`<div class="leaderboard lb-rest">\${leaderboardRows(rest)}</div>\` : ""}
+      \`;
+    }
+
+    function slideHtml(q, total, onlineN) {
       if (state.phase === "LOBBY") {
-        main.innerHTML = \`
-          <div class="lobby-title">\${esc(state.title)}</div>
-          <div class="lobby-sub">Scan to join on your phone</div>
+        const n = state.participantCount;
+        return \`
           <div class="qr-large">\${QR_SVG}</div>
           <div class="join-url">\${esc(JOIN_URL)}</div>
-          <div class="participant-count"><span class="score">\${state.participantCount}</span> participant\${state.participantCount === 1 ? "" : "s"} waiting · <span class="score">\${total}</span> question\${total === 1 ? "" : "s"}</div>
+          <div class="participant-count"><span class="score">\${n}</span> joined · <span class="score">\${onlineN}</span> online · <span class="score">\${total}</span> question\${total === 1 ? "" : "s"}</div>
         \`;
-        return;
       }
 
       if (state.phase === "QUESTION" || state.phase === "CORRECT") {
         const hi = state.phase === "CORRECT" ? q.correct : -1;
-        main.innerHTML = \`
-          \${metaHtml}
+        return \`
           <div class="slide-content">
-            <div class="q-progress">Question \${state.questionIndex + 1} of \${total}</div>
             <div class="q-text">\${md(q.text)}</div>
             <div class="choices">\${renderChoices(q.choices, hi)}</div>
           </div>
         \`;
-        return;
       }
 
       if (state.phase === "EXPLAIN") {
-        main.innerHTML = \`
-          \${metaHtml}
-          <div class="slide-content">
-            <div class="q-progress">Explanation · Q\${state.questionIndex + 1} of \${total}</div>
+        // Question and choices condensed so the explanation keeps the space;
+        // fitMain() may hide the wrong choices (explain-compact)
+        return \`
+          <div class="slide-content explain-slide">
+            <div class="q-text q-recap">\${md(q.text)}</div>
+            <div class="choices choices-recap">\${renderChoices(q.choices, q.correct)}</div>
             <div class="explain-box">\${md(q.explain || "No explanation")}</div>
           </div>
         \`;
-        return;
       }
 
       if (state.phase === "LEADERBOARD") {
-        const rows = state.leaderboard.map((e) => \`
-          <div class="lb-row \${e.rank <= 3 ? "top3" : ""}">
-            <div class="lb-rank">#\${e.rank}</div>
-            <div class="lb-name">\${esc(e.name)}</div>
-            <div class="lb-score">\${formatScore(e.score)}</div>
-          </div>
-        \`).join("") || \`<p class="muted">No participants yet</p>\`;
-        main.innerHTML = \`
-          \${metaHtml}
+        const rows = leaderboardRows(state.leaderboard.slice(0, 10)) ||
+          \`<p class="muted">No participants yet</p>\`;
+        return \`
           <div class="slide-content lb-slide">
-            <div class="q-progress">Leaderboard · after Q\${state.questionIndex + 1} of \${total}</div>
             <div class="leaderboard">\${rows}</div>
           </div>
         \`;
-        return;
       }
 
       if (state.phase === "END") {
-        const rows = state.leaderboard.slice(0, 10).map((e) => \`
-          <div class="lb-row \${e.rank <= 3 ? "top3" : ""}">
-            <div class="lb-rank">#\${e.rank}</div>
-            <div class="lb-name">\${esc(e.name)}</div>
-            <div class="lb-score">\${formatScore(e.score)}</div>
-          </div>
-        \`).join("");
-        main.innerHTML = \`
-          <div class="slide-content lb-slide">
-            <div class="end-title">Session complete</div>
-            <p class="muted lb-end-sub">Final standings · out of \${total}</p>
-            <div class="leaderboard">\${rows}</div>
+        const asked = questionsAsked();
+        const board = state.leaderboard.length
+          ? podiumHtml(state.leaderboard)
+          : \`<p class="muted">No participants</p>\`;
+        return \`
+          <div class="slide-content lb-slide end-slide">
+            <div class="end-title">Final standings</div>
+            <p class="muted lb-end-sub">Scores out of \${asked} question\${asked === 1 ? "" : "s"}</p>
+            \${board}
           </div>
         \`;
+      }
+      return "";
+    }
+
+    /** fetch() that fails after timeoutMs, so a hung tunnel counts as down. */
+    async function fetchWithTimeout(url, init, timeoutMs) {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), timeoutMs);
+      try {
+        return await fetch(url, { ...init, signal: ctl.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    // Reconnecting banner: shown after CONN_FAILS_TO_WARN failed polls in
+    // a row (~3 s at the 1.5 s poll), cleared by the next good response
+    const CONN_FAILS_TO_WARN = 2;
+    const connBanner = document.getElementById("conn-banner");
+    const connText = document.getElementById("conn-text");
+    let connFails = 0;
+    let connLostAt = 0;
+
+    function noteConnection(ok) {
+      if (ok) {
+        connFails = 0;
+        connBanner.hidden = true;
+        return;
+      }
+      connFails += 1;
+      if (connFails === 1) connLostAt = Date.now();
+      if (connFails >= CONN_FAILS_TO_WARN) {
+        const sec = Math.round((Date.now() - connLostAt) / 1000);
+        connText.textContent = "Connection lost · reconnecting… (" + sec + " s)";
+        connBanner.hidden = false;
       }
     }
 
     async function fetchState() {
-      const res = await fetch(SESSION_BASE + "/api/state");
+      const res = await fetchWithTimeout(SESSION_BASE + "/api/state", {}, 4000);
       if (!res.ok) throw new Error("state failed");
       const next = await res.json();
       // Avoid clobbering draft while host is editing selects: only replace
@@ -661,7 +861,12 @@ export function projectorHtml(
       nextBtn.disabled = true;
       resetBtn.disabled = true;
       try {
-        const res = await fetch(SESSION_BASE + path, { method: "POST" });
+        const res = await fetchWithTimeout(
+          SESSION_BASE + path,
+          { method: "POST" },
+          8000,
+        );
+        noteConnection(true);
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
           console.error(err);
@@ -671,30 +876,135 @@ export function projectorHtml(
           facetsSignature = "";
           render();
         }
+      } catch (err) {
+        console.error("Navigation failed:", err);
+        noteConnection(false);
       } finally {
         navBusy = false;
         updateNavButtons();
       }
     }
 
-    backBtn.addEventListener("click", () => postNav("/api/back"));
-    nextBtn.addEventListener("click", () => postNav("/api/advance"));
-    resetBtn.addEventListener("click", () => {
-      if (navBusy) return;
-      const ok = confirm(
-        "Return to lobby and clear filters? Participants and scores are kept.",
-      );
-      if (!ok) return;
-      postNav("/api/reset");
+    // Presenter keys / clicker: see src/projector_keys.ts
+    ${projectorKeyAction.toString()}
+    ${keyNavAllowed.toString()}
+    const KEY_NAV_DEBOUNCE_MS = ${KEY_NAV_DEBOUNCE_MS};
+    let lastKeyNavMs = -Infinity;
+
+    function anyModalOpen() {
+      return !qrModal.hidden || !resetConfirm.hidden;
+    }
+
+    document.addEventListener("keydown", (e) => {
+      // Any key (clicker Next/Back too) wakes the host controls
+      showControls();
+      const t = e.target instanceof Element ? e.target : null;
+      const typing = !!(t && t.closest(
+        'input, textarea, select, [contenteditable=""], [contenteditable="true"], #filter-panel',
+      ));
+      const onButton = !!(t && t.closest('button, [role="button"], a[href]'));
+      const action = projectorKeyAction(e, {
+        typing,
+        modalOpen: anyModalOpen(),
+        onButton,
+      });
+      if (!action) return;
+      e.preventDefault();
+      const now = performance.now();
+      if (!keyNavAllowed(now, lastKeyNavMs, KEY_NAV_DEBOUNCE_MS)) return;
+      const btn = action === "next" ? nextBtn : backBtn;
+      if (btn.disabled) return;
+      lastKeyNavMs = now;
+      postNav(action === "next" ? "/api/advance" : "/api/back");
     });
 
-    fetchState().catch((e) => {
+    // Clicking a host button must not leave focus on it, or a later
+    // Space/Enter would press that button instead of Next
+    for (const b of document.querySelectorAll("#footer button")) {
+      b.addEventListener("mousedown", (e) => e.preventDefault());
+    }
+
+    backBtn.addEventListener("click", () => postNav("/api/back"));
+    nextBtn.addEventListener("click", () => postNav("/api/advance"));
+    // Reset: styled in-page confirm; Cancel has focus, so Enter/Escape
+    // cancel and no single key can reset
+    function openResetConfirm() {
+      if (navBusy) return;
+      resetConfirm.hidden = false;
+      resetCancel.focus();
+    }
+
+    function closeResetConfirm() {
+      resetConfirm.hidden = true;
+      if (resetConfirm.contains(document.activeElement)) document.activeElement.blur();
+    }
+
+    resetBtn.addEventListener("click", openResetConfirm);
+    resetConfirm.addEventListener("click", (e) => {
+      if (e.target.closest("[data-cancel]")) closeResetConfirm();
+    });
+    resetOk.addEventListener("click", () => {
+      closeResetConfirm();
+      postNav("/api/reset");
+    });
+    resetConfirm.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeResetConfirm();
+      } else if (e.key === "Tab") {
+        // Keep focus inside the dialog
+        e.preventDefault();
+        (document.activeElement === resetCancel ? resetOk : resetCancel).focus();
+      }
+    });
+
+    // Host controls (footer buttons, slider) hide after a few idle seconds
+    // and come back on mouse movement or any key (including Next/Back)
+    const CONTROLS_IDLE_MS = 3000;
+    let controlsTimer = null;
+    let pointerInFooter = false;
+
+    function hideControlsIfIdle() {
+      controlsTimer = null;
+      const focusInFooter = footer.contains(document.activeElement);
+      if (pointerInFooter || focusInFooter || anyModalOpen()) {
+        controlsTimer = setTimeout(hideControlsIfIdle, CONTROLS_IDLE_MS);
+        return;
+      }
+      shell.classList.add("controls-hidden");
+    }
+
+    function showControls() {
+      shell.classList.remove("controls-hidden");
+      if (controlsTimer !== null) clearTimeout(controlsTimer);
+      controlsTimer = setTimeout(hideControlsIfIdle, CONTROLS_IDLE_MS);
+    }
+
+    for (const ev of ["mousemove", "mousedown", "touchstart", "wheel"]) {
+      document.addEventListener(ev, showControls, { passive: true });
+    }
+    footer.addEventListener("mouseenter", () => { pointerInFooter = true; });
+    footer.addEventListener("mouseleave", () => { pointerInFooter = false; });
+    footer.addEventListener("focusin", showControls);
+    showControls();
+
+    function pollState() {
+      return fetchState().then(
+        () => noteConnection(true),
+        (e) => {
+          noteConnection(false);
+          throw e;
+        },
+      );
+    }
+
+    pollState().catch((e) => {
       main.innerHTML = \`<p class="muted">Failed to load: \${esc(e.message)}</p>\`;
     });
 
     // light poll so join count updates in lobby
     setInterval(() => {
-      if (!navBusy && !filterBusy) fetchState().catch(() => {});
+      if (!navBusy && !filterBusy) pollState().catch(() => {});
     }, 1500);
   </script>
 </body>

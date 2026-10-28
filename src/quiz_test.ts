@@ -7,13 +7,17 @@ import {
 } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
   buildMetadataFilterFacets,
+  choiceOrder,
   collectQuestionMetadataKeys,
   effectiveCountdownSeconds,
   filterQuestionsByMetadata,
   formatEmptyFilterDiagnostic,
   loadQuiz,
   parseFilterEntry,
+  parseIdList,
+  remapChoiceLetters,
   resolveSlideMetadata,
+  selectQuestionsByIds,
   shuffleQuestionChoices,
   suggestMetadataKeys,
   validateQuiz,
@@ -619,6 +623,69 @@ Deno.test("shuffleQuestionChoices: injected RNG yields known permutation", () =>
   assertEquals(shuffled.choices[shuffled.correct], "B");
 });
 
+Deno.test("remapChoiceLetters: known permutation remaps (A)..(D)", () => {
+  // Display order: authored D, A, B, C → authored A is shown as B, D as A
+  const order = [3, 0, 1, 2];
+  assertEquals(
+    remapChoiceLetters("(A) is wrong. (B) too. (C) also. (D) is right.", order),
+    "(B) is wrong. (C) too. (D) also. (A) is right.",
+  );
+});
+
+Deno.test("remapChoiceLetters: swap A<->D does not double-remap", () => {
+  // Authored A shown at D, authored D shown at A (B, C stay)
+  const order = [3, 1, 2, 0];
+  assertEquals(
+    remapChoiceLetters("(A) loses; (D) wins; (A)/(D) compared.", order),
+    "(D) loses; (A) wins; (D)/(A) compared.",
+  );
+});
+
+Deno.test("remapChoiceLetters: keyword forms remap, other text is left alone", () => {
+  const order = [3, 1, 2, 0];
+  assertEquals(
+    remapChoiceLetters("Option A beats answer D; choice B stays.", order),
+    "Option D beats answer A; choice B stays.",
+  );
+  const untouched =
+    "A coordinator runs (a) and (b). Plan A works. (E) is out of range. " +
+    "Agent A and step (1) stay. ABC (AB) [A] {D}";
+  assertEquals(remapChoiceLetters(untouched, order), untouched);
+});
+
+Deno.test("remapChoiceLetters: identity order is a no-op", () => {
+  const text = "(A) no. (B) yes. (C) no. (D) no.";
+  assertEquals(remapChoiceLetters(text, [0, 1, 2, 3]), text);
+});
+
+Deno.test("shuffleQuestionChoices: explain letters follow the shuffle", () => {
+  const q0: Question = {
+    text: "Q?",
+    choices: ["a0", "b1", "c2", "d3"],
+    correct: 3,
+    explain: "(A) is bad. (B) is bad. (C) is bad. (D) is right.",
+  };
+  const shuffled = shuffleQuestionChoices(q0, () => 0);
+  const order = choiceOrder(q0.choices, shuffled.choices)!;
+  // Each cited letter now names the same choice text as authored
+  for (let authored = 0; authored < 4; authored++) {
+    const shown = order.indexOf(authored);
+    const letter = "ABCD"[shown]!;
+    const sentence = ["(A) is bad", "(B) is bad", "(C) is bad", "(D) is right"][authored]!
+      .replace(/\([A-D]\)/, `(${letter})`);
+    assertEquals(shuffled.explain.includes(sentence), true, sentence);
+  }
+  assertEquals("ABCD"[shuffled.correct], shuffled.explain.match(/\(([A-D])\) is right/)![1]);
+  assertEquals(q0.explain, "(A) is bad. (B) is bad. (C) is bad. (D) is right.");
+});
+
+Deno.test("choiceOrder: maps display to authored, handles duplicates and mismatch", () => {
+  assertEquals(choiceOrder(["a", "b", "c"], ["c", "a", "b"]), [2, 0, 1]);
+  assertEquals(choiceOrder(["x", "x", "y"], ["y", "x", "x"]), [2, 0, 1]);
+  assertEquals(choiceOrder(["a", "b"], ["a", "z"]), null);
+  assertEquals(choiceOrder(["a", "b"], ["a"]), null);
+});
+
 Deno.test("shuffleQuestionChoices: default RNG can change order", () => {
   const q0: Question = {
     text: "Q?",
@@ -850,4 +917,73 @@ Deno.test("buildMetadataFilterFacets: strings, bools, numbers, arrays; omit obje
 
   const n = facets.find((f) => f.key === "n")!;
   assertEquals(n.values, [{ value: "2", count: 2 }]);
+});
+
+function bankQ(id: unknown, live: boolean): Question {
+  return {
+    text: `Text ${String(id)}`,
+    choices: ["a", "b"],
+    correct: 0,
+    explain: "",
+    metadata: id === undefined ? { live } : { id, live },
+  };
+}
+
+const ID_BANK: Question[] = [
+  bankQ("Q1", true),
+  bankQ("Q2", false),
+  bankQ("Q7", true),
+  bankQ("Q12", false),
+  bankQ(undefined, true),
+  bankQ(30, true),
+];
+
+Deno.test("parseIdList: commas and/or whitespace, empties ignored", () => {
+  assertEquals(parseIdList("q1,q7,q12"), ["q1", "q7", "q12"]);
+  assertEquals(parseIdList(" Q1, Q7  Q12 ,,"), ["Q1", "Q7", "Q12"]);
+  assertEquals(parseIdList(""), []);
+});
+
+Deno.test("selectQuestionsByIds: keeps the given order, not file order", () => {
+  const picked = selectQuestionsByIds(ID_BANK, ["Q12", "Q1", "Q7"]);
+  assertEquals(picked.map((q) => q.metadata?.id), ["Q12", "Q1", "Q7"]);
+  // Numeric ids match their string form
+  assertEquals(selectQuestionsByIds(ID_BANK, ["30"])[0]!.metadata?.id, 30);
+});
+
+Deno.test("selectQuestionsByIds: unknown, duplicate, ambiguous ids throw", () => {
+  assertThrows(
+    () => selectQuestionsByIds(ID_BANK, ["Q1", "Q99", "q7"]),
+    Error,
+    "not found in metadata.id: Q99, q7",
+  );
+  assertThrows(
+    () => selectQuestionsByIds(ID_BANK, ["Q1", "Q1"]),
+    Error,
+    "listed more than once: Q1",
+  );
+  assertThrows(
+    () => selectQuestionsByIds([...ID_BANK, bankQ("Q1", false)], ["Q1"]),
+    Error,
+    "used by more than one question: Q1",
+  );
+});
+
+Deno.test("live=true filter selects only live questions (file order)", () => {
+  const live = filterQuestionsByMetadata(ID_BANK, [{ key: "live", value: "true" }]);
+  assertEquals(live.map((q) => q.metadata?.id), ["Q1", "Q7", undefined, 30]);
+});
+
+Deno.test("ids then live filter: AND, given order kept", () => {
+  const picked = selectQuestionsByIds(ID_BANK, ["Q7", "Q2", "Q1"]);
+  const live = filterQuestionsByMetadata(picked, [{ key: "live", value: "true" }]);
+  assertEquals(live.map((q) => q.metadata?.id), ["Q7", "Q1"]);
+});
+
+Deno.test("filter id=... (OR within key) keeps file order", () => {
+  const picked = filterQuestionsByMetadata(ID_BANK, [
+    { key: "id", value: "Q12" },
+    { key: "id", value: "Q1" },
+  ]);
+  assertEquals(picked.map((q) => q.metadata?.id), ["Q1", "Q12"]);
 });

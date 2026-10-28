@@ -24,6 +24,13 @@ export function playerHtml(logoHtml = ""): string {
       ${logoHtml}
     </div>
 
+    <!-- Outside the scrolling card, so it is seen without scrolling -->
+    <div id="conn-banner" class="conn-banner" role="alert" hidden>
+      <span class="conn-dot" aria-hidden="true"></span>
+      <span id="conn-text">Connection lost · reconnecting…</span>
+    </div>
+    <div class="error top-error" id="answer-error" role="alert"></div>
+
     <div class="card">
       <!-- JOIN -->
       <div class="view active" id="view-join">
@@ -51,11 +58,13 @@ export function playerHtml(logoHtml = ""): string {
           <span id="q-name"></span>
           <span class="score">Score: <span id="q-score">0</span></span>
         </div>
-        <div class="q-meta" id="q-meta"></div>
-        <div class="countdown" id="q-countdown" hidden aria-live="polite" aria-atomic="true"></div>
+        <div class="q-head">
+          <div class="q-meta" id="q-meta"></div>
+          <div class="countdown" id="q-countdown" hidden aria-live="polite" aria-atomic="true"></div>
+        </div>
+        <div class="time-bar" id="q-timebar" hidden><span></span></div>
         <div class="q-text" id="q-text"></div>
         <div class="choices" id="q-choices"></div>
-        <div class="error" id="answer-error"></div>
       </div>
 
       <!-- FEEDBACK -->
@@ -69,7 +78,7 @@ export function playerHtml(logoHtml = ""): string {
           <div class="big" id="fb-big"></div>
           <div class="muted" id="fb-detail"></div>
         </div>
-        <div class="wait-sub" style="margin-top:1.5rem">Waiting for host to continue…</div>
+        <div class="wait-sub" id="fb-sub" style="margin-top:1.5rem">Waiting for host to continue…</div>
       </div>
     </div>
 
@@ -92,8 +101,9 @@ export function playerHtml(logoHtml = ""): string {
     let participantName = "";
     let score = 0;
     let state = null;
-    let lastFeedback = null; // { correct, correctIndex, score, questionIndex }
+    let lastFeedback = null; // { choiceIndex, questionIndex } until the next poll
     let answering = false;
+    let renderedQuestionKey = null; // question whose buttons are on screen
     let countdownTickTimer = null;
 
     const views = {
@@ -107,6 +117,44 @@ export function playerHtml(logoHtml = ""): string {
       for (const [k, el] of Object.entries(views)) {
         el.classList.toggle("active", k === name);
       }
+      if (name !== "question") document.getElementById("answer-error").textContent = "";
+    }
+
+    async function fetchWithTimeout(url, init, ms) {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), ms);
+      try {
+        return await fetch(url, { ...init, signal: ctl.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    // Reconnecting banner: shown after CONN_FAILS_TO_WARN failed polls in a
+    // row (~2 s at the 1 s poll) or at once when an answer cannot be sent;
+    // cleared by the next good response
+    const CONN_FAILS_TO_WARN = 2;
+    const connBanner = document.getElementById("conn-banner");
+    const connText = document.getElementById("conn-text");
+    let connFails = 0;
+
+    function noteConnection(ok) {
+      if (ok) {
+        connFails = 0;
+        connBanner.hidden = true;
+        return;
+      }
+      connFails += 1;
+      if (connFails >= CONN_FAILS_TO_WARN) {
+        connText.textContent = "Connection lost · reconnecting…";
+        connBanner.hidden = false;
+      }
+    }
+
+    function showOffline(message) {
+      connFails = Math.max(connFails, CONN_FAILS_TO_WARN);
+      connText.textContent = message;
+      connBanner.hidden = false;
     }
 
     function esc(s) {
@@ -138,14 +186,26 @@ export function playerHtml(logoHtml = ""): string {
         if (!c || c.deadlineMs == null) {
           el.hidden = true;
           el.textContent = "";
-          el.classList.remove("urgent");
+          el.classList.remove("warn", "urgent");
           continue;
         }
         const sec = remainingSeconds(c.deadlineMs);
         el.hidden = false;
         el.textContent = sec + "s";
+        // Amber at 10 s, red at 5 s (as on the projector)
+        el.classList.toggle("warn", sec <= 10 && sec > 5);
         el.classList.toggle("urgent", sec <= 5);
         el.setAttribute("aria-label", sec + " seconds remaining");
+      }
+      const bar = document.getElementById("q-timebar");
+      bar.hidden = !c || c.deadlineMs == null || !c.totalSeconds;
+      if (!bar.hidden) {
+        const left = Math.max(0, (c.deadlineMs - Date.now()) / 1000);
+        const sec = Math.ceil(left);
+        bar.firstElementChild.style.width =
+          Math.min(100, (100 * left) / c.totalSeconds).toFixed(1) + "%";
+        bar.classList.toggle("warn", sec <= 10 && sec > 5);
+        bar.classList.toggle("urgent", sec <= 5);
       }
     }
 
@@ -165,9 +225,17 @@ export function playerHtml(logoHtml = ""): string {
       const url = participantId
         ? SESSION_BASE + "/api/state?id=" + encodeURIComponent(participantId)
         : SESSION_BASE + "/api/state";
-      const res = await fetch(url);
-      if (!res.ok) throw new Error("state failed");
-      state = await res.json();
+      let next;
+      try {
+        const res = await fetchWithTimeout(url, {}, 4000);
+        if (!res.ok) throw new Error("state failed");
+        next = await res.json();
+      } catch (e) {
+        noteConnection(false);
+        throw e;
+      }
+      noteConnection(true);
+      state = next;
       document.getElementById("quiz-title").textContent = state.title || "Quiz";
 
       if (state.participant) {
@@ -200,46 +268,55 @@ export function playerHtml(logoHtml = ""): string {
       }
 
       const phase = state.phase;
-      const answered = state.participant.answered;
-
-      // Clear feedback when moving to a new question
-      if (
-        lastFeedback &&
-        (phase === "QUESTION" && state.questionIndex !== lastFeedback.questionIndex)
-      ) {
+      // Feedback from the answer response covers the gap until the next poll
+      if (lastFeedback && lastFeedback.questionIndex !== state.questionIndex) {
         lastFeedback = null;
       }
-      if (phase === "LOBBY") lastFeedback = null;
+      if (phase === "LOBBY" || phase === "END") lastFeedback = null;
+      const answered = state.participant.answered || !!lastFeedback;
+      const revealed = revealedNow();
 
-      if (phase === "QUESTION" && !answered && !lastFeedback) {
+      if (phase === "QUESTION" && state.answersLocked && !answered) {
+        show("wait");
+        document.getElementById("wait-msg").textContent = "Answers closed";
+        document.getElementById("wait-sub").textContent =
+          "The host is reviewing this question · score " + score;
+        return;
+      }
+
+      if (phase === "QUESTION" && !answered) {
         show("question");
-        document.getElementById("q-meta").textContent =
-          "Question " + (state.questionIndex + 1) + " of " + state.questionCount;
-        document.getElementById("q-text").innerHTML = md(state.question.text);
         const box = document.getElementById("q-choices");
-        box.innerHTML = state.question.choices.map((c, i) =>
-          \`<button type="button" class="choice" data-i="\${i}" \${answering ? "disabled" : ""}>
-            <span class="choice-letter">\${LETTERS[i] || i + 1}: </span>\${esc(c)}
-          </button>\`
-        ).join("");
-        document.getElementById("answer-error").textContent = "";
+        // Rebuild only for a new question: replacing the buttons on every
+        // poll drops a press that is still held down when the poll lands
+        const key = JSON.stringify([
+          state.questionIndex, state.question.text, state.question.choices,
+        ]);
+        if (key !== renderedQuestionKey) {
+          renderedQuestionKey = key;
+          document.getElementById("q-meta").textContent =
+            "Question " + (state.questionIndex + 1) + " of " + state.questionCount;
+          document.getElementById("q-text").innerHTML = md(state.question.text);
+          box.innerHTML = state.question.choices.map((c, i) =>
+            \`<button type="button" class="choice" data-i="\${i}">
+              <span class="choice-letter">\${LETTERS[i] || i + 1}: </span>\${esc(c)}
+            </button>\`
+          ).join("");
+          document.getElementById("answer-error").textContent = "";
+          box.querySelectorAll(".choice").forEach((btn) => {
+            btn.addEventListener("click", () => submitAnswer(Number(btn.dataset.i)));
+          });
+        }
         box.querySelectorAll(".choice").forEach((btn) => {
-          btn.addEventListener("click", () => submitAnswer(Number(btn.dataset.i)));
+          btn.disabled = answering;
         });
         return;
       }
 
-      if (phase === "QUESTION" && (answered || lastFeedback)) {
+      const reviewing = phase === "CORRECT" || phase === "EXPLAIN" || phase === "LEADERBOARD";
+      if ((answered && (phase === "QUESTION" || revealed)) || (reviewing && revealed)) {
         show("feedback");
         paintFeedback();
-        return;
-      }
-
-      // non-QUESTION phases after join
-      if (lastFeedback && (phase === "CORRECT" || phase === "EXPLAIN" || phase === "LEADERBOARD")) {
-        show("feedback");
-        paintFeedback();
-        document.getElementById("wait-sub") && null;
         return;
       }
 
@@ -252,7 +329,7 @@ export function playerHtml(logoHtml = ""): string {
       } else if (phase === "END") {
         msg.textContent = "Session complete";
         sub.textContent = "Final score: " + score;
-      } else if (phase === "CORRECT" || phase === "EXPLAIN" || phase === "LEADERBOARD") {
+      } else if (reviewing) {
         msg.textContent = "Hang tight";
         sub.textContent = "Host is reviewing · score " + score;
       } else {
@@ -265,22 +342,42 @@ export function playerHtml(logoHtml = ""): string {
       const box = document.getElementById("fb-box");
       const big = document.getElementById("fb-big");
       const detail = document.getElementById("fb-detail");
-      if (lastFeedback) {
-        box.className = "feedback " + (lastFeedback.correct ? "ok" : "bad");
-        big.textContent = lastFeedback.correct ? "Correct" : "Incorrect";
-        if (!lastFeedback.correct && state.question) {
-          const ci = lastFeedback.correctIndex;
-          const label = LETTERS[ci] || String(ci + 1);
-          const text = state.question.choices[ci] || "";
-          detail.textContent = "Correct answer: " + label + ". " + text;
-        } else {
-          detail.textContent = "Score: " + lastFeedback.score;
-        }
+      const q = state.question;
+      const mine = state.participant ? state.participant.choiceIndex : null;
+      if (q && q.correctIndex != null && mine != null) {
+        // Revealed: the server's record, so it survives a reload
+        const ok = mine === q.correctIndex;
+        box.className = "feedback " + (ok ? "ok" : "bad");
+        big.textContent = ok ? "Correct" : "Incorrect";
+        detail.textContent = ok
+          ? "Score: " + score
+          : correctAnswerLine(q);
+      } else if (q && q.correctIndex != null && !lastFeedback) {
+        // Revealed, no answer from this player
+        box.className = "feedback missed";
+        big.textContent = "You didn't answer";
+        detail.textContent = correctAnswerLine(q);
       } else {
+        // Still open: no hint of the result until the answer is revealed
+        const pick = mine != null ? mine : (lastFeedback ? lastFeedback.choiceIndex : null);
         box.className = "feedback";
-        big.textContent = "Answer locked";
-        detail.textContent = "Score: " + score;
+        big.textContent = "Answer locked in";
+        detail.textContent = q && pick != null
+          ? "You picked " + (LETTERS[pick] || String(pick + 1)) + ". " + (q.choices[pick] || "")
+          : "";
       }
+      document.getElementById("fb-sub").textContent = revealedNow()
+        ? "Waiting for host to continue…"
+        : "Your result appears when the answer is revealed";
+    }
+
+    function correctAnswerLine(q) {
+      return "Correct answer: " + (LETTERS[q.correctIndex] || String(q.correctIndex + 1)) +
+        ". " + (q.choices[q.correctIndex] || "");
+    }
+
+    function revealedNow() {
+      return !!(state && state.question && state.question.correctIndex != null);
     }
 
     async function submitAnswer(choiceIndex) {
@@ -288,11 +385,20 @@ export function playerHtml(logoHtml = ""): string {
       answering = true;
       document.getElementById("answer-error").textContent = "";
       try {
-        const res = await fetch(SESSION_BASE + "/api/answer", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: participantId, choiceIndex }),
-        });
+        let res;
+        try {
+          res = await fetchWithTimeout(SESSION_BASE + "/api/answer", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: participantId, choiceIndex }),
+          }, 8000);
+        } catch {
+          showOffline("No connection · answer not sent");
+          document.getElementById("answer-error").textContent =
+            "Your answer was not sent. Check your connection and tap again.";
+          return;
+        }
+        noteConnection(true);
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           document.getElementById("answer-error").textContent =
@@ -301,9 +407,7 @@ export function playerHtml(logoHtml = ""): string {
           return;
         }
         lastFeedback = {
-          correct: data.correct,
-          correctIndex: data.correctIndex,
-          score: data.score,
+          choiceIndex,
           questionIndex: state.questionIndex,
         };
         score = data.score;

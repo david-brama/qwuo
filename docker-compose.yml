@@ -1,15 +1,33 @@
-# Cloudflare quick tunnel for the player port only (both app ports are 127.0.0.1).
+# Cloudflare tunnel for the player port only (both app ports are 127.0.0.1).
 # Used by scripts/start-with-tunnel.sh. PLAYER_PORT defaults to 3001.
 # Docker Desktop: host.docker.internal reaches host loopback. On Linux Docker,
 # if this fails, use TUNNEL_MODE=native (cloudflared on host → 127.0.0.1).
+# Image is pinned; bump the tag deliberately (and re-test) rather than using latest.
 services:
+  # Quick tunnel: random https://<name>.trycloudflare.com (changes every start)
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared:2026.10.5
     command:
       - tunnel
       - --no-autoupdate
       - --url
       - http://host.docker.internal:${PLAYER_PORT:-3001}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: "no"
+
+  # Named tunnel (fixed hostname). Token from the Cloudflare dashboard via the
+  # TUNNEL_TOKEN env var; set the tunnel's public hostname service to
+  # http://host.docker.internal:3001 in the dashboard.
+  cloudflared-named:
+    image: cloudflare/cloudflared:2026.10.5
+    profiles: ["named"]
+    command:
+      - tunnel
+      - --no-autoupdate
+      - run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: "no"

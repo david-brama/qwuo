@@ -1,5 +1,6 @@
 import {
   parseFilterEntry,
+  parseIdList,
   type MetadataFilter,
 } from "./quiz.ts";
 
@@ -16,6 +17,16 @@ export type Config = {
   sessionFresh: boolean;
   /** Startup metadata filters (env then CLI); empty = all questions. */
   filters: MetadataFilter[];
+  /**
+   * Explicit question ids (`QUIZ_IDS` then `--ids`), matched on
+   * `metadata.id`, played in this order. Empty = no id selection.
+   */
+  ids: string[];
+  /**
+   * Header with the real client IP, trusted for rate limiting only when set
+   * (TRUST_PROXY_HEADER, e.g. `cf-connecting-ip`). Null = use socket address.
+   */
+  trustProxyHeader: string | null;
 };
 
 const UUID_RE =
@@ -89,7 +100,18 @@ export function parseQuizFilterEnv(raw: string | undefined): MetadataFilter[] {
  * Rejects unknown operands. Does not re-join shell-split tokens.
  */
 export function parseFilterCliArgs(args: string[]): MetadataFilter[] {
+  return parseCliArgs(args).filters;
+}
+
+/**
+ * Parse app CLI args: repeatable `--filter key=value` and `--ids a,b,c`
+ * (`=` forms too). Rejects unknown operands.
+ */
+export function parseCliArgs(
+  args: string[],
+): { filters: MetadataFilter[]; ids: string[] } {
   const out: MetadataFilter[] = [];
+  const ids: string[] = [];
   let i = 0;
   while (i < args.length) {
     const a = args[i]!;
@@ -116,12 +138,35 @@ export function parseFilterCliArgs(args: string[]): MetadataFilter[] {
       i += 2;
       continue;
     }
+    if (a.startsWith("--ids=")) {
+      ids.push(...parseIdList(a.slice("--ids=".length)));
+      i++;
+      continue;
+    }
+    if (a === "--ids") {
+      const next = args[i + 1];
+      if (next === undefined || next.startsWith("-")) {
+        throw new Error(
+          `CLI --ids requires a comma-separated id list (got ${
+            next === undefined ? "end of args" : next
+          })`,
+        );
+      }
+      ids.push(...parseIdList(next));
+      i += 2;
+      continue;
+    }
     throw new Error(
       `Unknown CLI argument: ${a}\n` +
-        `Usage: --filter key=value (repeatable). Quote values with spaces, e.g. --filter "domain=Tool Design & MCP Integration"`,
+        `Usage: --filter key=value (repeatable), --ids Q1,Q7,Q12. Quote values with spaces, e.g. --filter "domain=Tool Design & MCP Integration"`,
     );
   }
-  return out;
+  return { filters: out, ids };
+}
+
+/** Merge `QUIZ_IDS` env then `--ids` CLI ids (given order). */
+export function resolveIds(envRaw: string | undefined, args: string[]): string[] {
+  return [...parseIdList(envRaw ?? ""), ...parseCliArgs(args).ids];
 }
 
 /**
@@ -135,7 +180,11 @@ export function resolveFilters(
 }
 
 export function loadConfig(
-  options: { args?: string[]; envFilter?: string | undefined } = {},
+  options: {
+    args?: string[];
+    envFilter?: string | undefined;
+    envIds?: string | undefined;
+  } = {},
 ): Config {
   const publicUrl = Deno.env.get("PUBLIC_URL")?.trim() || null;
   const rawId = Deno.env.get("SESSION_ID")?.trim() || null;
@@ -151,6 +200,10 @@ export function loadConfig(
     : Deno.env.get("QUIZ_FILTER");
   const args = options.args ?? Deno.args;
   const filters = resolveFilters(envFilter, args);
+  const envIds = options.envIds !== undefined
+    ? options.envIds
+    : Deno.env.get("QUIZ_IDS");
+  const ids = resolveIds(envIds, args);
 
   return {
     publicUrl,
@@ -161,6 +214,9 @@ export function loadConfig(
     sessionId,
     sessionFresh: envTruthy("SESSION_FRESH"),
     filters,
+    ids,
+    trustProxyHeader:
+      Deno.env.get("TRUST_PROXY_HEADER")?.trim().toLowerCase() || null,
   };
 }
 

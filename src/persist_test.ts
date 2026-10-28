@@ -145,6 +145,88 @@ Deno.test("sessionToSnapshot / sessionFromSnapshot round-trip", async () => {
   assertEquals(restored.advance(), "EXPLAIN");
 });
 
+Deno.test("sessionFromSnapshot re-derives explain letters from bank (no double remap)", async () => {
+  const quiz: Quiz = {
+    title: "Letters",
+    questions: [{
+      text: "Q?",
+      choices: ["a0", "b1", "c2"],
+      correct: 2,
+      explain: "(A) no. (B) no. (C) yes.",
+    }],
+  };
+  // alwaysZero on 3 choices → display order [b1, c2, a0]
+  const session = new Session(quiz, { randomInt: alwaysZero });
+  const live = session.getEffectiveQuestions()[0]!;
+  assertEquals(live.choices, ["b1", "c2", "a0"]);
+  assertEquals(live.explain, "(C) no. (A) no. (B) yes.");
+
+  const fp = await quizFingerprint(quiz);
+  const snap = sessionToSnapshot(session, fp);
+  // Restoring an already-remapped snapshot keeps the same letters
+  assertEquals(
+    sessionFromSnapshot(quiz, snap).getEffectiveQuestions()[0]!.explain,
+    "(C) no. (A) no. (B) yes.",
+  );
+  // Legacy snapshot that stored the authored (unmapped) text is fixed on load
+  snap.effectiveQuestions[0]!.explain = "(A) no. (B) no. (C) yes.";
+  assertEquals(
+    sessionFromSnapshot(quiz, snap).getEffectiveQuestions()[0]!.explain,
+    "(C) no. (A) no. (B) yes.",
+  );
+});
+
+Deno.test("snapshot keeps answers locked after Back from CORRECT", async () => {
+  const quiz: Quiz = {
+    ...sampleQuiz,
+    config: { slideMetadataKeys: [], countdownSeconds: 30 },
+  };
+  const session = new Session(quiz, { randomInt: alwaysZero });
+  const { id } = session.join("Late");
+  session.advance(); // QUESTION
+  session.advance(); // CORRECT
+  session.back(); // locked QUESTION
+  assertEquals(session.answersLocked, true);
+
+  const fp = await quizFingerprint(quiz);
+  const snap = sessionToSnapshot(session, fp);
+  assertEquals(snap.revealedThrough, 0);
+  assertEquals(isValidSnapshot(snap), true);
+  const restored = sessionFromSnapshot(quiz, snap);
+  assertEquals(restored.phase, "QUESTION");
+  assertEquals(restored.answersLocked, true);
+  assertEquals(restored.getQuestionDeadlineMs(), null);
+  let status = 0;
+  try {
+    restored.answer(id, 0);
+  } catch (err) {
+    status = (err as { status: number }).status;
+  }
+  assertEquals(status, 409);
+});
+
+Deno.test("legacy snapshot without revealedThrough derives it from phase", async () => {
+  const session = new Session(sampleQuiz, { randomInt: alwaysZero });
+  session.advance(); // Q0
+  session.advance(); // CORRECT (revealed 0)
+  const fp = await quizFingerprint(sampleQuiz);
+  const snap = sessionToSnapshot(session, fp);
+  delete snap.revealedThrough;
+  const restored = sessionFromSnapshot(sampleQuiz, snap);
+  assertEquals(restored.getRevealedThrough(), 0);
+  restored.back(); // QUESTION of a revealed question → locked
+  assertEquals(restored.answersLocked, true);
+});
+
+Deno.test("isValidSnapshot rejects bad revealedThrough", async () => {
+  const session = new Session(sampleQuiz, { randomInt: alwaysZero });
+  const snap = sessionToSnapshot(session, await quizFingerprint(sampleQuiz));
+  assertEquals(isValidSnapshot({ ...snap, revealedThrough: -2 }), false);
+  assertEquals(isValidSnapshot({ ...snap, revealedThrough: 0.5 }), false);
+  assertEquals(isValidSnapshot({ ...snap, revealedThrough: "0" }), false);
+  assertEquals(isValidSnapshot({ ...snap, revealedThrough: -1 }), true);
+});
+
 Deno.test("toHydrate / fromHydrate preserves maps and effective order", () => {
   const session = new Session(sampleQuiz, { randomInt: alwaysZero });
   const { id } = session.join("Bob");
@@ -363,7 +445,8 @@ Deno.test("join/answer/advance then save → new Session matches; reset clears",
   restored.reset();
   assertEquals(restored.phase, "LOBBY");
   assertEquals(restored.participantCount(), 2);
-  assertEquals(restored.getParticipant(alice.id)?.score, 2);
+  // Reset zeroes scores (no double-scoring on replay)
+  assertEquals(restored.getParticipant(alice.id)?.score, 0);
   assertEquals(restored.getParticipant(bob.id)?.score, 0);
   assertEquals(restored.hasAnswered(alice.id, 0), false);
   await clearSnapshot(path);

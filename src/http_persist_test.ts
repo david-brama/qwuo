@@ -37,6 +37,8 @@ const config: Config = {
   sessionId: SESSION_ID,
   sessionFresh: false,
   filters: [],
+  ids: [],
+  trustProxyHeader: null,
 };
 
 function api(path: string): string {
@@ -213,11 +215,39 @@ Deno.test("session-scoped UI and state serve for active id", async () => {
   const ui = await projector(new Request(api("/")));
   assertEquals(ui.status, 200);
   assertEquals(ui.headers.get("content-type")?.includes("text/html"), true);
+  const html = await ui.text();
+  assertEquals(html.includes("answeredCount"), true);
+  assertEquals(html.includes("activeUserCount"), true);
 
   const st = await player(new Request(`http://0.0.0.0${BASE}/api/state`));
   assertEquals(st.status, 200);
   const body = await st.json();
   assertEquals(body.title, "HTTP Persist");
+
+  const projState = await projector(new Request(api("/api/state")));
+  assertEquals(projState.status, 200);
+  const pbody = await projState.json();
+  assertEquals(pbody.activeUserCount, 0);
+  assertEquals(pbody.activeAnsweredCount, 0);
+  assertEquals("activeUserCount" in body, false);
+});
+
+Deno.test("player poll with id marks the participant online", async () => {
+  let t = 1_000_000;
+  const session = new Session(quiz, { now: () => t });
+  const projector = createProjectorHandler(session, config, SESSION_ID);
+  const player = createPlayerHandler(session, SESSION_ID);
+  const { id } = session.join("Pat");
+  const online = async () =>
+    (await (await projector(new Request(api("/api/state")))).json()).onlineCount;
+  assertEquals(await online(), 1);
+  t += 60_000;
+  assertEquals(await online(), 0);
+  const res = await player(
+    new Request(`http://0.0.0.0${BASE}/api/state?id=${id}`),
+  );
+  await res.body?.cancel();
+  assertEquals(await online(), 1);
 });
 
 Deno.test("UI omits logo when none provided", async () => {
@@ -454,4 +484,60 @@ Deno.test("player POST /api/filter rejected", async () => {
     }),
   );
   assertEquals(res.status, 403);
+});
+
+Deno.test("player answer after Back from CORRECT gets 409 with clear error", async () => {
+  const session = new Session(quiz);
+  const player = createPlayerHandler(session, SESSION_ID);
+  const projector = createProjectorHandler(session, config, SESSION_ID);
+  const { id } = session.join("Late");
+  for (const step of ["advance", "advance", "back"]) {
+    const r = await projector(new Request(api(`/api/${step}`), { method: "POST" }));
+    await r.body?.cancel();
+  }
+  const state = await (await projector(new Request(api("/api/state")))).json();
+  assertEquals(state.phase, "QUESTION");
+  assertEquals(state.answersLocked, true);
+  assertEquals(state.countdown, null);
+
+  const res = await player(
+    new Request(api("/api/answer"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id, choiceIndex: state.question.correct }),
+    }),
+  );
+  assertEquals(res.status, 409);
+  const body = await res.json();
+  assertEquals(String(body.error).includes("closed"), true);
+  assertEquals(session.getParticipant(id)?.score, 0);
+});
+
+Deno.test("player answer response and state do not reveal the result during QUESTION", async () => {
+  const session = new Session(quiz);
+  const player = createPlayerHandler(session, SESSION_ID);
+  const { id } = session.join("Early");
+  session.advance(); // QUESTION
+  const correct = session.projectorState().question!.correct;
+  const res = await player(
+    new Request(api("/api/answer"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id, choiceIndex: correct }),
+    }),
+  );
+  assertEquals(res.status, 200);
+  assertEquals(await res.json(), { choiceIndex: correct, score: 0 });
+  assertEquals(session.getParticipant(id)?.score, 1);
+
+  const open = await (await player(new Request(api(`/api/state?id=${id}`)))).json();
+  assertEquals(open.question.correctIndex, null);
+  assertEquals(open.participant.score, 0);
+  assertEquals(open.participant.choiceIndex, correct);
+  assertEquals("correct" in open.question, false);
+
+  session.advance(); // CORRECT
+  const shown = await (await player(new Request(api(`/api/state?id=${id}`)))).json();
+  assertEquals(shown.question.correctIndex, correct);
+  assertEquals(shown.participant.score, 1);
 });

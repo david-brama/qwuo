@@ -3,7 +3,9 @@
     "start": "deno run -P main.ts",
     "start:tunnel": "./scripts/start-with-tunnel.sh",
     "dev": "deno run -P --watch main.ts",
-    "test": "deno test -A src/"
+    "test": "deno test -A src/ scripts/",
+    "test:ui": "deno run -A scripts/ui_check.ts",
+    "quiz:lengths": "deno run --allow-read --allow-env=QUIZ_PATH scripts/choice_lengths.ts"
   },
   "permissions": {
     "default": {
@@ -13,19 +15,24 @@
       "env": [
         "QUIZ_PATH",
         "QUIZ_FILTER",
+        "QUIZ_IDS",
         "PUBLIC_URL",
         "SESSIONS_DIR",
         "SESSION_ID",
         "SESSION_FRESH",
         "PROJECTOR_PORT",
-        "PLAYER_PORT"
+        "PLAYER_PORT",
+        "TRUST_PROXY_HEADER"
       ]
     }
   },
   "nodeModulesDir": "auto",
   "imports": {
     "marked": "npm:marked@15",
-    "dompurify": "npm:dompurify@3"
+    "dompurify": "npm:dompurify@3",
+    "playwright-core": "npm:playwright-core@1.56.1",
+    "jsqr": "npm:jsqr@1.4.0",
+    "pngjs": "npm:pngjs@7.0.0"
   },
   "compilerOptions": {
     "strict": true,

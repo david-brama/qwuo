@@ -252,10 +252,78 @@ export function copyQuestion(q: Question): Question {
   return out;
 }
 
+const CHOICE_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+/**
+ * Choice-letter references rewritten by `remapChoiceLetters`:
+ * `(A)` and `Option A` / `Choice A` / `Answer A` (keyword any case, letter
+ * uppercase). Lowercase `(a)` is left alone (used as case labels in prose).
+ */
+const CHOICE_LETTER_REF =
+  /\(([A-Z])\)|\b((?:option|choice|answer)\s+)([A-Z])\b/gi;
+
+/**
+ * Rewrite authored choice letters so they match a shuffled display order.
+ * `order[displayIndex] = authoredIndex`. Single pass, so A→D and D→A in the
+ * same text never double-remap. Letters outside the choice range are kept.
+ */
+export function remapChoiceLetters(
+  text: string,
+  order: readonly number[],
+): string {
+  const n = order.length;
+  const displayOf = new Map<number, number>();
+  order.forEach((authored, display) => displayOf.set(authored, display));
+  const map = (letter: string): string | null => {
+    const authored = CHOICE_LETTERS.indexOf(letter);
+    if (authored < 0 || authored >= n) return null;
+    const display = displayOf.get(authored);
+    return display === undefined ? null : CHOICE_LETTERS[display]!;
+  };
+  return text.replace(
+    CHOICE_LETTER_REF,
+    (whole, paren?: string, keyword?: string, kwLetter?: string) => {
+      if (paren !== undefined) {
+        // Regex is case-insensitive for keywords; letters must be uppercase
+        if (paren !== paren.toUpperCase()) return whole;
+        const m = map(paren);
+        return m === null ? whole : `(${m})`;
+      }
+      if (kwLetter === undefined || kwLetter !== kwLetter.toUpperCase()) {
+        return whole;
+      }
+      const m = map(kwLetter);
+      return m === null ? whole : `${keyword}${m}`;
+    },
+  );
+}
+
+/**
+ * Display order of `shuffled` choices relative to `authored` choices
+ * (`order[displayIndex] = authoredIndex`), or null if they are not the same
+ * multiset. Duplicate labels match the first unused authored index.
+ */
+export function choiceOrder(
+  authored: readonly string[],
+  shuffled: readonly string[],
+): number[] | null {
+  if (authored.length !== shuffled.length) return null;
+  const used = new Set<number>();
+  const order: number[] = [];
+  for (const c of shuffled) {
+    const i = authored.findIndex((a, j) => a === c && !used.has(j));
+    if (i < 0) return null;
+    used.add(i);
+    order.push(i);
+  }
+  return order;
+}
+
 /**
  * Fisher–Yates shuffle of choice order; remaps `correct` to the same choice
  * text by original index (safe with duplicate labels). Does not mutate input.
- * Preserves `metadata` when present.
+ * Preserves `metadata` when present. Choice-letter references in `explain`
+ * are rewritten to the shuffled letters (see `remapChoiceLetters`).
  */
 export function shuffleQuestionChoices(
   question: Question,
@@ -280,7 +348,7 @@ export function shuffleQuestionChoices(
     text: question.text,
     choices,
     correct,
-    explain: question.explain,
+    explain: remapChoiceLetters(question.explain, order),
   };
   if (question.countdownSeconds !== undefined) {
     out.countdownSeconds = question.countdownSeconds;
@@ -386,6 +454,67 @@ export function filterQuestionsByMetadata(
     }
     return true;
   });
+}
+
+/**
+ * Parse an id list (`QUIZ_IDS` / `--ids`): comma- and/or whitespace-separated.
+ * Empty entries are ignored.
+ */
+export function parseIdList(raw: string): string[] {
+  return raw.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+}
+
+/** `metadata.id` as a string (string or finite number), else null. */
+function questionId(q: Question): string | null {
+  const id = q.metadata?.id;
+  if (typeof id === "string") return id.trim() || null;
+  if (typeof id === "number" && Number.isFinite(id)) return String(id);
+  return null;
+}
+
+/**
+ * Select questions by `metadata.id`, in the **given** order (not file order).
+ * Ids are exact and case-sensitive. Throws on duplicate requested ids, ids not
+ * in the bank, or ids that more than one bank question uses.
+ */
+export function selectQuestionsByIds(
+  questions: Question[],
+  ids: string[],
+): Question[] {
+  const byId = new Map<string, Question[]>();
+  for (const q of questions) {
+    const id = questionId(q);
+    if (id === null) continue;
+    const list = byId.get(id);
+    if (list) list.push(q);
+    else byId.set(id, [q]);
+  }
+  const seen = new Set<string>();
+  const dupes: string[] = [];
+  const missing: string[] = [];
+  const ambiguous: string[] = [];
+  const out: Question[] = [];
+  for (const id of ids) {
+    if (seen.has(id)) {
+      dupes.push(id);
+      continue;
+    }
+    seen.add(id);
+    const matches = byId.get(id);
+    if (!matches) missing.push(id);
+    else if (matches.length > 1) ambiguous.push(id);
+    else out.push(matches[0]!);
+  }
+  const errors: string[] = [];
+  if (dupes.length) errors.push(`listed more than once: ${dupes.join(", ")}`);
+  if (missing.length) errors.push(`not found in metadata.id: ${missing.join(", ")}`);
+  if (ambiguous.length) {
+    errors.push(`used by more than one question: ${ambiguous.join(", ")}`);
+  }
+  if (errors.length) {
+    throw new Error(`Question ids (QUIZ_IDS / --ids) ${errors.join("; ")}`);
+  }
+  return out;
 }
 
 /** Human-readable filter list for logs/errors. */

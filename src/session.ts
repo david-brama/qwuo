@@ -63,15 +63,112 @@ export type SessionHydrate = {
    * (or legacy snapshot — caller may start a fresh countdown).
    */
   questionDeadlineMs?: number | null;
+  /**
+   * Highest question index whose correct answer has been shown (-1 = none).
+   * Omitted (legacy snapshot) → derived from phase / questionIndex.
+   */
+  revealedThrough?: number;
 };
 
 /** Server-side name cap (matches player input maxlength). */
 export const MAX_NAME_LENGTH = 40;
-export const MAX_PARTICIPANTS = 200;
+export const MAX_PARTICIPANTS = 500;
+
+/**
+ * A participant whose phone polled within this window counts as online.
+ * Phones poll every second, so 15 s rides out short Wi-Fi drops.
+ */
+export const ONLINE_WINDOW_MS = 15_000;
+
+/** Rolling window size for active-user engagement. */
+export const ENGAGEMENT_WINDOW_SIZE = 4;
+/** Minimum answers within the window to count as active. */
+export const ACTIVE_ANSWER_THRESHOLD = 2;
+
+/**
+ * Playable question indices in the engagement window (at most
+ * ENGAGEMENT_WINDOW_SIZE), ending at the phase reference index.
+ * LOBBY → empty; END → last playable index; question cycle → current index.
+ */
+export function engagementWindowIndices(
+  phase: Phase,
+  questionIndex: number,
+  questionCount: number,
+): number[] {
+  let ref: number;
+  if (phase === "LOBBY") {
+    return [];
+  }
+  if (phase === "END") {
+    if (questionCount <= 0) return [];
+    ref = questionCount - 1;
+  } else {
+    ref = questionIndex;
+  }
+  const start = Math.max(0, ref - (ENGAGEMENT_WINDOW_SIZE - 1));
+  const out: number[] = [];
+  for (let i = start; i <= ref; i++) out.push(i);
+  return out;
+}
+
+/** True if the participant has ≥ ACTIVE_ANSWER_THRESHOLD answers in window. */
+export function isActiveParticipant(
+  answers: ReadonlyMap<number, number>,
+  window: readonly number[],
+): boolean {
+  if (window.length < ACTIVE_ANSWER_THRESHOLD) return false;
+  let n = 0;
+  for (const idx of window) {
+    if (answers.has(idx)) {
+      n++;
+      if (n >= ACTIVE_ANSWER_THRESHOLD) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Competition ranks ("1224") for scores already sorted high → low:
+ * equal scores share a rank, and the next rank skips the tied places.
+ */
+export function competitionRanks(sortedScores: readonly number[]): number[] {
+  const ranks: number[] = [];
+  for (let i = 0; i < sortedScores.length; i++) {
+    ranks.push(
+      i > 0 && sortedScores[i] === sortedScores[i - 1] ? ranks[i - 1] : i + 1,
+    );
+  }
+  return ranks;
+}
 
 /** Strip C0 controls + DEL; trim; enforce max length. */
 export function normalizeParticipantName(name: string): string {
   return name.replace(/[\u0000-\u001F\u007F]/g, "").trim();
+}
+
+/** Key for duplicate-name checks: case- and whitespace-insensitive. */
+export function participantNameKey(name: string): string {
+  return name.normalize("NFC").replace(/\s+/g, " ").trim().toLocaleLowerCase();
+}
+
+/**
+ * `name`, or `name (2)`, `name (3)`, … when the name is already taken
+ * (see participantNameKey). The base is cut so the result stays within
+ * MAX_NAME_LENGTH.
+ */
+export function uniqueParticipantName(
+  name: string,
+  taken: ReadonlySet<string>,
+): string {
+  if (!taken.has(participantNameKey(name))) return name;
+  for (let n = 2;; n++) {
+    const suffix = ` (${n})`;
+    // Drop whole code points so an emoji is never split
+    const chars = [...name];
+    while (chars.join("").length + suffix.length > MAX_NAME_LENGTH) chars.pop();
+    const candidate = chars.join("").trimEnd() + suffix;
+    if (!taken.has(participantNameKey(candidate))) return candidate;
+  }
 }
 
 function cloneQuestions(questions: Question[]): Question[] {
@@ -120,6 +217,8 @@ export type SessionOptions = {
   effectiveQuestions?: Question[];
   /** Initial runtime metadata filters (default none). */
   runtimeFilters?: MetadataFilter[];
+  /** Injectable clock for presence tests (default Date.now). */
+  now?: () => number;
 };
 
 export class Session {
@@ -136,6 +235,9 @@ export class Session {
   phase: Phase = "LOBBY";
   questionIndex = 0;
   private participants = new Map<string, Participant>();
+  /** participant id → last poll/join/answer time (epoch ms); not persisted. */
+  private lastSeenMs = new Map<string, number>();
+  private now: () => number = Date.now;
   private nextJoinOrder = 0;
   private readonly randomInt?: RandomInt;
 
@@ -147,10 +249,17 @@ export class Session {
   private countdownGeneration = 0;
   private countdownTimer: ReturnType<typeof setTimeout> | null = null;
   private countdownHooks: CountdownHooks = {};
+  /**
+   * Highest question index whose answer has been revealed (reached CORRECT).
+   * Play is lockstep, so every lower index is revealed too. A QUESTION at or
+   * below this index is read-only: no answers, no countdown.
+   */
+  private revealedThrough = -1;
 
   constructor(quiz: Quiz, options?: SessionOptions) {
     this.quiz = quiz;
     this.randomInt = options?.randomInt;
+    if (options?.now) this.now = options.now;
     this.runtimeFilters = cloneFilters(options?.runtimeFilters ?? []);
     if (options?.effectiveQuestions) {
       if (options.effectiveQuestions.length === 0) {
@@ -170,6 +279,24 @@ export class Session {
   /** Current absolute QUESTION deadline, or null. */
   getQuestionDeadlineMs(): number | null {
     return this.questionDeadlineMs;
+  }
+
+  /** True when the current QUESTION's answer was already revealed (Back). */
+  get answersLocked(): boolean {
+    return this.phase === "QUESTION" &&
+      this.questionIndex <= this.revealedThrough;
+  }
+
+  /** Highest revealed question index (-1 = none). */
+  getRevealedThrough(): number {
+    return this.revealedThrough;
+  }
+
+  /** Record that the current question's answer is now shown. */
+  private markCurrentRevealed(): void {
+    if (this.questionIndex > this.revealedThrough) {
+      this.revealedThrough = this.questionIndex;
+    }
   }
 
   private clearCountdownTimer(): void {
@@ -192,6 +319,11 @@ export class Session {
    */
   private startCountdownForCurrentQuestion(): void {
     this.clearCountdownTimer();
+    if (this.answersLocked) {
+      this.questionDeadlineMs = null;
+      this.countdownTotalSeconds = null;
+      return;
+    }
     const effective = effectiveCountdownSeconds(this.quiz, this.currentQuestion);
     if (effective === null || effective <= 0) {
       this.questionDeadlineMs = null;
@@ -214,7 +346,7 @@ export class Session {
    */
   restoreCountdown(deadlineMs: number | null | undefined): void {
     this.clearCountdownTimer();
-    if (this.phase !== "QUESTION") {
+    if (this.phase !== "QUESTION" || this.answersLocked) {
       this.questionDeadlineMs = null;
       this.countdownTotalSeconds = null;
       return;
@@ -244,6 +376,7 @@ export class Session {
       this.countdownTotalSeconds = null;
       if (this.phase === "QUESTION") {
         this.phase = "CORRECT";
+        this.markCurrentRevealed();
       }
       return;
     }
@@ -270,6 +403,7 @@ export class Session {
     if (this.phase !== "QUESTION") return;
     // Unanswered stay at 0 — same as host advance from QUESTION
     this.phase = "CORRECT";
+    this.markCurrentRevealed();
     this.clearCountdown();
     const hook = this.countdownHooks.onAutoAdvance;
     if (hook) {
@@ -357,6 +491,10 @@ export class Session {
     this.runtimeFilters = normalized;
     this.playQuestions = this.shuffleBankSubset(matched);
     this.questionIndex = 0;
+    // Indices now point at a different question set: the reveal watermark
+    // and per-index answers no longer apply. Scores already earned stay.
+    this.revealedThrough = -1;
+    for (const p of this.participants.values()) p.answers.clear();
   }
 
   private buildShuffledPlayQuestions(
@@ -389,6 +527,8 @@ export class Session {
     session.phase = state.phase;
     session.questionIndex = state.questionIndex;
     session.nextJoinOrder = state.nextJoinOrder;
+    session.revealedThrough = state.revealedThrough ??
+      legacyRevealedThrough(state.phase, state.questionIndex, session.questionCount);
     for (const p of state.participants) {
       session.participants.set(p.id, {
         id: p.id,
@@ -418,22 +558,25 @@ export class Session {
       effectiveQuestions: cloneQuestions(this.playQuestions),
       runtimeFilters: cloneFilters(this.runtimeFilters),
       questionDeadlineMs: this.questionDeadlineMs,
+      revealedThrough: this.revealedThrough,
     };
   }
 
   /**
    * Soft host reset: return to LOBBY, clear runtime filters (full bank +
-   * fresh shuffle), keep participants and scores. Per-question answers are
-   * cleared so indices stay consistent with the rebuilt playable set.
+   * fresh shuffle), keep participants (same QR / ids). Scores and
+   * per-question answers are zeroed so a replay cannot score twice.
    */
   reset(): void {
     this.clearCountdown();
     this.phase = "LOBBY";
     this.questionIndex = 0;
+    this.revealedThrough = -1;
     this.runtimeFilters = [];
     this.playQuestions = this.buildShuffledPlayQuestions([]);
     for (const p of this.participants.values()) {
       p.answers.clear();
+      p.score = 0;
     }
   }
 
@@ -464,16 +607,29 @@ export class Session {
         400,
       );
     }
+    // Two "Dana"s on the leaderboard are indistinguishable: suffix the later one
+    const taken = new Set(
+      [...this.participants.values()].map((p) => participantNameKey(p.name)),
+    );
+    const unique = uniqueParticipantName(trimmed, taken);
     const id = crypto.randomUUID();
     const participant: Participant = {
       id,
-      name: trimmed,
+      name: unique,
       joinOrder: this.nextJoinOrder++,
       score: 0,
       answers: new Map(),
     };
     this.participants.set(id, participant);
-    return { id, name: trimmed };
+    this.markSeen(id);
+    return { id, name: unique };
+  }
+
+  /** Record that a participant's phone is connected (poll, join, answer). */
+  markSeen(participantId: string): void {
+    if (this.participants.has(participantId)) {
+      this.lastSeenMs.set(participantId, this.now());
+    }
   }
 
   getParticipant(id: string): Participant | undefined {
@@ -486,6 +642,12 @@ export class Session {
   ): { correct: boolean; correctIndex: number; score: number } {
     if (this.phase !== "QUESTION") {
       throw new SessionError("Answers only accepted during QUESTION phase", 400);
+    }
+    if (this.answersLocked) {
+      throw new SessionError(
+        "Answers are closed: the correct answer was already shown",
+        409,
+      );
     }
     const p = this.participants.get(participantId);
     if (!p) {
@@ -504,6 +666,7 @@ export class Session {
     }
 
     p.answers.set(this.questionIndex, choiceIndex);
+    this.markSeen(participantId);
     const correct = choiceIndex === q.correct;
     if (correct) p.score += 1;
 
@@ -520,6 +683,7 @@ export class Session {
       case "QUESTION":
         // Unanswered stay at 0 — no retroactive answers after this
         this.phase = "CORRECT";
+        this.markCurrentRevealed();
         break;
       case "CORRECT":
         this.phase = "EXPLAIN";
@@ -546,7 +710,10 @@ export class Session {
   /**
    * Reverse one host step (projector Back). LOBBY is a no-op.
    * Does not clear answers or scores — only phase / question index.
-   * Back into QUESTION restarts a full countdown (does not resume partial).
+   * Back from CORRECT shows the QUESTION read-only (answersLocked): answers
+   * are rejected and no countdown runs, since the answer was already shown.
+   * Re-entering an unrevealed QUESTION (Back past it, then Next) starts a
+   * full countdown (does not resume partial).
    */
   back(): Phase {
     const prev = this.phase;
@@ -600,18 +767,30 @@ export class Session {
     return this.phase !== "LOBBY";
   }
 
+  /**
+   * Score order with competition ranking: equal scores share a rank and the
+   * next rank skips (1, 1, 3). Ties list in join order.
+   */
   leaderboard(): LeaderboardEntry[] {
     const list = [...this.participants.values()].sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
       return a.joinOrder - b.joinOrder;
     });
-    return list.map((p, i) => ({
-      id: p.id,
-      name: p.name,
-      score: p.score,
-      joinOrder: p.joinOrder,
-      rank: i + 1,
+    return competitionRanks(list.map((p) => p.score)).map((rank, i) => ({
+      id: list[i].id,
+      name: list[i].name,
+      score: list[i].score,
+      joinOrder: list[i].joinOrder,
+      rank,
     }));
+  }
+
+  /**
+   * Questions whose answer has been revealed (scored) so far — the fair
+   * denominator for leaderboard scores.
+   */
+  questionsAsked(): number {
+    return Math.min(this.questionCount, Math.max(0, this.revealedThrough + 1));
   }
 
   hasAnswered(participantId: string, questionIndex = this.questionIndex): boolean {
@@ -623,6 +802,54 @@ export class Session {
     return this.participants.size;
   }
 
+  /**
+   * Host engagement metrics derived from answer maps.
+   * activeAnsweredCount is 0 in LOBBY/END (no current-question slide).
+   */
+  private engagementMetrics(): {
+    activeUserCount: number;
+    activeAnsweredCount: number;
+  } {
+    const window = engagementWindowIndices(
+      this.phase,
+      this.questionIndex,
+      this.questionCount,
+    );
+    const trackCurrentAnswered =
+      this.phase !== "LOBBY" && this.phase !== "END";
+    let activeUserCount = 0;
+    let activeAnsweredCount = 0;
+    for (const p of this.participants.values()) {
+      if (!isActiveParticipant(p.answers, window)) continue;
+      activeUserCount++;
+      if (trackCurrentAnswered && p.answers.has(this.questionIndex)) {
+        activeAnsweredCount++;
+      }
+    }
+    return { activeUserCount, activeAnsweredCount };
+  }
+
+  /**
+   * "X of N answered" for the current question. X = answers to it.
+   * N = participants who can answer it: online now (polled within
+   * ONLINE_WINDOW_MS) or already answered, so X ≤ N and closed or
+   * abandoned phones do not inflate N. Both 0 in LOBBY/END.
+   */
+  answerProgress(): { answeredCount: number; onlineCount: number } {
+    const cutoff = this.now() - ONLINE_WINDOW_MS;
+    const onSlide = this.phase !== "LOBBY" && this.phase !== "END";
+    let answeredCount = 0;
+    let onlineCount = 0;
+    for (const p of this.participants.values()) {
+      const answered = onSlide && p.answers.has(this.questionIndex);
+      if (answered) answeredCount++;
+      if (answered || (this.lastSeenMs.get(p.id) ?? -Infinity) >= cutoff) {
+        onlineCount++;
+      }
+    }
+    return { answeredCount, onlineCount };
+  }
+
   /** Host-facing full state */
   projectorState() {
     const q = this.phase === "LOBBY" || this.phase === "END"
@@ -630,6 +857,8 @@ export class Session {
       : this.currentQuestion;
 
     const slideKeys = this.quiz.config?.slideMetadataKeys;
+    const { activeUserCount, activeAnsweredCount } = this.engagementMetrics();
+    const { answeredCount, onlineCount } = this.answerProgress();
 
     return {
       role: "projector" as const,
@@ -638,12 +867,18 @@ export class Session {
       questionIndex: this.questionIndex,
       questionCount: this.questionCount,
       bankQuestionCount: this.bankQuestionCount,
+      questionsAsked: this.questionsAsked(),
       participantCount: this.participantCount(),
+      answeredCount,
+      onlineCount,
+      activeUserCount,
+      activeAnsweredCount,
       canGoBack: this.canGoBack(),
       canApplyFilter: this.phase === "LOBBY",
       activeFilters: this.getRuntimeFilters(),
       filterFacets: this.getFilterFacets(),
       countdown: this.countdownPayload(),
+      answersLocked: this.answersLocked,
       question: q
         ? {
           text: q.text,
@@ -657,13 +892,34 @@ export class Session {
     };
   }
 
-  /** Player-facing state — never leaks correct index before answer */
+  /**
+   * Score as the player may see it: while the current QUESTION is still
+   * open, its point is left out, so the score cannot give the answer away
+   * before the reveal.
+   */
+  playerScore(participantId: string): number {
+    const p = this.participants.get(participantId);
+    if (!p) return 0;
+    if (this.phase !== "QUESTION" || this.answersLocked) return p.score;
+    const choice = p.answers.get(this.questionIndex);
+    return choice !== undefined && choice === this.currentQuestion.correct
+      ? p.score - 1
+      : p.score;
+  }
+
+  /**
+   * Player-facing state. The correct index is sent only once the current
+   * question has been revealed (CORRECT and later, or Back to a locked
+   * QUESTION), so a reload can rebuild the result without the client
+   * keeping it.
+   */
   playerState(participantId?: string | null) {
     const p = participantId ? this.participants.get(participantId) : undefined;
     const answered = p ? p.answers.has(this.questionIndex) : false;
     const q = this.phase === "LOBBY" || this.phase === "END"
       ? null
       : this.currentQuestion;
+    const revealed = q !== null && this.questionIndex <= this.revealedThrough;
 
     return {
       role: "player" as const,
@@ -672,21 +928,47 @@ export class Session {
       questionIndex: this.questionIndex,
       questionCount: this.questionCount,
       countdown: this.countdownPayload(),
+      answersLocked: this.answersLocked,
       question: q
         ? {
           text: q.text,
           choices: q.choices,
+          correctIndex: revealed ? q.correct : null,
         }
         : null,
       participant: p
         ? {
           id: p.id,
           name: p.name,
-          score: p.score,
+          score: this.playerScore(p.id),
           answered,
+          /** This player's choice for the current question, if any. */
+          choiceIndex: q ? p.answers.get(this.questionIndex) ?? null : null,
         }
         : null,
     };
+  }
+}
+
+/**
+ * Revealed watermark for snapshots saved before it was stored. Lockstep play
+ * means every index before the current one was revealed, plus the current one
+ * once past QUESTION.
+ */
+export function legacyRevealedThrough(
+  phase: Phase,
+  questionIndex: number,
+  questionCount: number,
+): number {
+  switch (phase) {
+    case "LOBBY":
+      return -1;
+    case "QUESTION":
+      return questionIndex - 1;
+    case "END":
+      return questionCount - 1;
+    default:
+      return questionIndex;
   }
 }
 

@@ -3,7 +3,17 @@ import {
   assertNotEquals,
 } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import type { Quiz } from "./quiz.ts";
-import { Session } from "./session.ts";
+import {
+  competitionRanks,
+  engagementWindowIndices,
+  isActiveParticipant,
+  legacyRevealedThrough,
+  MAX_NAME_LENGTH,
+  ONLINE_WINDOW_MS,
+  participantNameKey,
+  Session,
+  SessionError,
+} from "./session.ts";
 
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -301,7 +311,7 @@ Deno.test("runtime filter rejected outside LOBBY", () => {
   assertEquals(session.questionCount, 3);
 });
 
-Deno.test("reset clears runtime filters and keeps participants/scores", () => {
+Deno.test("reset clears runtime filters, keeps participants, zeroes scores", () => {
   const session = new Session(filterBankQuiz, { randomInt: alwaysZero });
   session.applyRuntimeFilters([{ key: "domain", value: "A" }]);
   assertEquals(session.questionCount, 2);
@@ -312,7 +322,7 @@ Deno.test("reset clears runtime filters and keeps participants/scores", () => {
   session.reset();
   assertEquals(session.phase, "LOBBY");
   assertEquals(session.participantCount(), 1);
-  assertEquals(session.getParticipant(id)?.score, 1);
+  assertEquals(session.getParticipant(id)?.score, 0);
   assertEquals(session.hasAnswered(id, 0), false);
   assertEquals(session.questionCount, 3);
   assertEquals(session.getRuntimeFilters(), []);
@@ -459,7 +469,7 @@ Deno.test("host advance cancels countdown timer", async () => {
   assertEquals(hookCalls, 0);
 });
 
-Deno.test("back into QUESTION restarts full countdown", () => {
+Deno.test("back from CORRECT into QUESTION does not restart countdown", () => {
   const quiz: Quiz = {
     title: "T",
     config: { slideMetadataKeys: [], countdownSeconds: 30 },
@@ -469,14 +479,155 @@ Deno.test("back into QUESTION restarts full countdown", () => {
   };
   const session = new Session(quiz, { randomInt: alwaysZero });
   session.advance();
-  const first = session.getQuestionDeadlineMs()!;
+  assertEquals(session.getQuestionDeadlineMs() !== null, true);
   session.advance(); // CORRECT
   assertEquals(session.projectorState().countdown, null);
-  session.back(); // QUESTION again
-  const second = session.getQuestionDeadlineMs()!;
+  session.back(); // QUESTION again, read-only
   assertEquals(session.phase, "QUESTION");
+  assertEquals(session.getQuestionDeadlineMs(), null);
+  assertEquals(session.projectorState().countdown, null);
+  assertEquals(session.playerState().countdown, null);
+  assertEquals(session.projectorState().answersLocked, true);
+  assertEquals(session.playerState().answersLocked, true);
+});
+
+Deno.test("re-entering an unrevealed QUESTION restarts full countdown", () => {
+  const quiz: Quiz = {
+    title: "T",
+    config: { slideMetadataKeys: [], countdownSeconds: 30 },
+    questions: [
+      { text: "Q1?", choices: ["A", "B"], correct: 0, explain: "" },
+      { text: "Q2?", choices: ["A", "B"], correct: 0, explain: "" },
+    ],
+  };
+  const session = new Session(quiz, { randomInt: alwaysZero });
+  session.advance(); // Q0
+  session.advance(); // CORRECT
+  session.advance(); // EXPLAIN
+  session.advance(); // LEADERBOARD
+  session.advance(); // Q1 (not revealed)
+  const first = session.getQuestionDeadlineMs()!;
+  session.back(); // LEADERBOARD Q0
+  session.advance(); // Q1 again
+  assertEquals(session.answersLocked, false);
   assertEquals(session.projectorState().countdown?.totalSeconds, 30);
-  assertEquals(second >= first, true);
+  assertEquals(session.getQuestionDeadlineMs()! >= first, true);
+});
+
+Deno.test("answers are rejected after Back from CORRECT (no late scoring)", () => {
+  const session = new Session(sampleQuiz, { randomInt: alwaysZero });
+  const early = session.join("Early");
+  const late = session.join("Late");
+  session.advance(); // QUESTION
+  const correct = session.projectorState().question!.correct;
+  session.answer(early.id, correct);
+  session.advance(); // CORRECT — answer revealed
+  session.back(); // QUESTION, locked
+  assertEquals(session.phase, "QUESTION");
+  let err: unknown;
+  try {
+    session.answer(late.id, correct);
+  } catch (e) {
+    err = e;
+  }
+  assertEquals(err instanceof SessionError, true);
+  assertEquals((err as SessionError).status, 409);
+  assertEquals((err as SessionError).message.includes("closed"), true);
+  assertEquals(session.getParticipant(late.id)?.score, 0);
+  assertEquals(session.hasAnswered(late.id), false);
+  assertEquals(session.getParticipant(early.id)?.score, 1);
+
+  // Next goes to CORRECT again; going back through the phases keeps it locked
+  assertEquals(session.advance(), "CORRECT");
+  session.advance(); // EXPLAIN
+  session.back(); // CORRECT
+  session.back(); // QUESTION
+  assertEquals(session.answersLocked, true);
+  // Back to LOBBY and in again: still locked (answer was shown)
+  session.back(); // LOBBY
+  session.advance(); // QUESTION 0
+  assertEquals(session.answersLocked, true);
+});
+
+Deno.test("changing the question set in LOBBY clears the reveal watermark", () => {
+  const session = new Session(filterBankQuiz, { randomInt: alwaysZero });
+  const p = session.join("P");
+  session.advance(); // QUESTION 0
+  session.answer(p.id, session.projectorState().question!.correct);
+  session.advance(); // CORRECT — revealed
+  session.back(); // QUESTION (locked)
+  session.back(); // LOBBY
+  assertEquals(session.getRevealedThrough(), 0);
+
+  session.applyRuntimeFilters([{ key: "live", value: "true" }]);
+  assertEquals(session.getRevealedThrough(), -1);
+  session.advance(); // new QUESTION 0
+  assertEquals(session.answersLocked, false);
+  assertEquals(session.hasAnswered(p.id), false);
+  session.answer(p.id, session.projectorState().question!.correct);
+  assertEquals(session.getParticipant(p.id)?.score, 2);
+
+  // Clearing the filter is also a set change
+  session.advance(); // CORRECT
+  session.back();
+  session.back(); // LOBBY
+  session.applyRuntimeFilters([]);
+  assertEquals(session.getRevealedThrough(), -1);
+  session.advance();
+  assertEquals(session.answersLocked, false);
+});
+
+Deno.test("countdown expiry also locks the question for Back", async () => {
+  const quiz: Quiz = {
+    title: "T",
+    config: { slideMetadataKeys: [], countdownSeconds: 1 },
+    questions: [
+      { text: "Q1?", choices: ["A", "B"], correct: 0, explain: "" },
+    ],
+  };
+  const session = new Session(quiz, { randomInt: alwaysZero });
+  const { id } = session.join("P");
+  session.advance();
+  await delay(1200);
+  assertEquals(session.phase, "CORRECT");
+  session.back();
+  assertEquals(session.answersLocked, true);
+  assertEquals(session.getQuestionDeadlineMs(), null);
+  let status = 0;
+  try {
+    session.answer(id, 0);
+  } catch (e) {
+    status = (e as SessionError).status;
+  }
+  assertEquals(status, 409);
+});
+
+Deno.test("reset zeroes scores so replaying a question cannot double-score", () => {
+  const session = new Session(sampleQuiz, { randomInt: alwaysZero });
+  const { id } = session.join("Pat");
+  session.advance(); // Q0
+  session.answer(id, session.projectorState().question!.correct);
+  session.advance(); // CORRECT
+  assertEquals(session.getParticipant(id)?.score, 1);
+
+  session.reset();
+  assertEquals(session.getParticipant(id)?.score, 0);
+  assertEquals(session.getRevealedThrough(), -1);
+  assertEquals(session.leaderboard()[0]!.score, 0);
+
+  session.advance(); // Q0 replay — open again
+  assertEquals(session.answersLocked, false);
+  session.answer(id, session.projectorState().question!.correct);
+  assertEquals(session.getParticipant(id)?.score, 1);
+});
+
+Deno.test("legacyRevealedThrough derives watermark from phase", () => {
+  assertEquals(legacyRevealedThrough("LOBBY", 0, 5), -1);
+  assertEquals(legacyRevealedThrough("QUESTION", 0, 5), -1);
+  assertEquals(legacyRevealedThrough("QUESTION", 3, 5), 2);
+  assertEquals(legacyRevealedThrough("CORRECT", 3, 5), 3);
+  assertEquals(legacyRevealedThrough("LEADERBOARD", 3, 5), 3);
+  assertEquals(legacyRevealedThrough("END", 4, 5), 4);
 });
 
 Deno.test("stale timeout does not advance later question", async () => {
@@ -511,4 +662,362 @@ Deno.test("stale timeout does not advance later question", async () => {
   if (session.phase === "QUESTION") {
     assertEquals(session.getQuestionDeadlineMs() !== null || deadline === null, true);
   }
+});
+
+// --- Active user engagement metrics ---
+
+function multiQuiz(n: number): Quiz {
+  return {
+    title: "Active",
+    questions: Array.from({ length: n }, (_, i) => ({
+      text: `Q${i + 1}?`,
+      choices: ["A", "B"],
+      correct: 0,
+      explain: "",
+    })),
+  };
+}
+
+/** Advance through a full question cycle ending on LEADERBOARD (or END on last). */
+function advanceToLeaderboard(session: Session): void {
+  // assume currently QUESTION
+  session.advance(); // CORRECT
+  session.advance(); // EXPLAIN
+  session.advance(); // LEADERBOARD
+}
+
+function answerWrong(session: Session, id: string): void {
+  const correct = session.projectorState().question!.correct;
+  session.answer(id, correct === 0 ? 1 : 0);
+}
+
+function answerRight(session: Session, id: string): void {
+  session.answer(id, session.projectorState().question!.correct);
+}
+
+Deno.test("engagementWindowIndices: LOBBY empty, short, four, END", () => {
+  assertEquals(engagementWindowIndices("LOBBY", 0, 10), []);
+  assertEquals(engagementWindowIndices("QUESTION", 0, 10), [0]);
+  assertEquals(engagementWindowIndices("QUESTION", 1, 10), [0, 1]);
+  assertEquals(engagementWindowIndices("CORRECT", 7, 10), [4, 5, 6, 7]);
+  assertEquals(engagementWindowIndices("END", 0, 10), [6, 7, 8, 9]);
+  assertEquals(engagementWindowIndices("END", 0, 0), []);
+});
+
+Deno.test("isActiveParticipant requires two answers in window", () => {
+  const window = [0, 1, 2, 3];
+  assertEquals(isActiveParticipant(new Map([[0, 0]]), window), false);
+  assertEquals(
+    isActiveParticipant(new Map([[0, 0], [2, 1]]), window),
+    true,
+  );
+  assertEquals(
+    isActiveParticipant(new Map([[0, 0]]), [0]),
+    false,
+  );
+});
+
+Deno.test("active metrics: Q0 never active even after answer", () => {
+  const session = new Session(multiQuiz(5), { randomInt: alwaysZero });
+  const { id } = session.join("A");
+  session.advance(); // Q0 QUESTION
+  answerRight(session, id);
+  const proj = session.projectorState();
+  assertEquals(proj.activeUserCount, 0);
+  assertEquals(proj.activeAnsweredCount, 0);
+});
+
+Deno.test("active metrics: 2-of-4 active; incorrect counts; non-active excluded", () => {
+  const session = new Session(multiQuiz(6), { randomInt: alwaysZero });
+  const engaged = session.join("Engaged").id;
+  const late = session.join("Late").id;
+  session.join("Silent");
+
+  // Q0 — both answer
+  session.advance();
+  answerWrong(session, engaged);
+  answerRight(session, late);
+  advanceToLeaderboard(session);
+
+  // Q1 — only engaged answers (wrong); window [0,1]
+  session.advance();
+  answerWrong(session, engaged);
+  const atQ1 = session.projectorState();
+  assertEquals(atQ1.activeUserCount, 1); // engaged: 2 answers; late: 1
+  assertEquals(atQ1.activeAnsweredCount, 1); // engaged answered Q1
+
+  // Q2 — only late answers; engaged still active from Q0+Q1 but did not answer Q2
+  advanceToLeaderboard(session);
+  session.advance();
+  answerRight(session, late);
+  const atQ2 = session.projectorState();
+  // window [0,1,2]: engaged answers {0,1} → active; late {0,2} → active
+  assertEquals(atQ2.activeUserCount, 2);
+  assertEquals(atQ2.activeAnsweredCount, 1); // only late answered Q2 among active
+  assertEquals(session.participantCount(), 3);
+});
+
+Deno.test("active metrics: LOBBY zeros; player state omits fields", () => {
+  const session = new Session(multiQuiz(3), { randomInt: alwaysZero });
+  session.join("A");
+  const proj = session.projectorState();
+  assertEquals(proj.activeUserCount, 0);
+  assertEquals(proj.activeAnsweredCount, 0);
+  const play = session.playerState() as Record<string, unknown>;
+  assertEquals("activeUserCount" in play, false);
+  assertEquals("activeAnsweredCount" in play, false);
+});
+
+Deno.test("active metrics: END window keeps activeUserCount; activeAnsweredCount 0", () => {
+  const session = new Session(multiQuiz(4), { randomInt: alwaysZero });
+  const a = session.join("A").id;
+  const b = session.join("B").id;
+  for (let q = 0; q < 4; q++) {
+    session.advance(); // QUESTION
+    answerRight(session, a);
+    if (q < 2) answerWrong(session, b); // B only first two
+    advanceToLeaderboard(session);
+    if (q < 3) {
+      // stay on LB then next Q via advance in loop start
+    }
+  }
+  // After last LEADERBOARD, one more advance → END
+  session.advance();
+  assertEquals(session.phase, "END");
+  const proj = session.projectorState();
+  // window [0,1,2,3]; A answered all 4 → active; B answered 0,1 → active
+  assertEquals(proj.activeUserCount, 2);
+  assertEquals(proj.activeAnsweredCount, 0);
+});
+
+Deno.test("active metrics: answer then re-read state updates counts", () => {
+  const session = new Session(multiQuiz(3), { randomInt: alwaysZero });
+  const id = session.join("P").id;
+  session.advance(); // Q0
+  answerRight(session, id);
+  advanceToLeaderboard(session);
+  session.advance(); // Q1 QUESTION
+  assertEquals(session.projectorState().activeUserCount, 0);
+  answerWrong(session, id);
+  const after = session.projectorState();
+  assertEquals(after.activeUserCount, 1);
+  assertEquals(after.activeAnsweredCount, 1);
+});
+
+Deno.test("active metrics: reset clears active metrics", () => {
+  const session = new Session(multiQuiz(3), { randomInt: alwaysZero });
+  const id = session.join("P").id;
+  session.advance();
+  answerRight(session, id);
+  advanceToLeaderboard(session);
+  session.advance();
+  answerRight(session, id);
+  assertEquals(session.projectorState().activeUserCount, 1);
+  session.reset();
+  assertEquals(session.phase, "LOBBY");
+  assertEquals(session.projectorState().activeUserCount, 0);
+  assertEquals(session.projectorState().activeAnsweredCount, 0);
+  assertEquals(session.participantCount(), 1);
+});
+
+// --- Leaderboard ranking and denominator ---
+
+Deno.test("competitionRanks: ties share a rank and the next rank skips", () => {
+  assertEquals(competitionRanks([]), []);
+  assertEquals(competitionRanks([5]), [1]);
+  assertEquals(competitionRanks([3, 3, 1]), [1, 1, 3]);
+  assertEquals(competitionRanks([4, 3, 3, 3, 2, 2, 0]), [1, 2, 2, 2, 5, 5, 7]);
+  assertEquals(competitionRanks([0, 0, 0]), [1, 1, 1]);
+});
+
+Deno.test("leaderboard: competition ranking, ties in join order", () => {
+  const session = new Session(multiQuiz(3), { randomInt: alwaysZero });
+  const a = session.join("Ann").id;
+  const b = session.join("Ben").id;
+  const c = session.join("Cy").id;
+  session.join("Dee");
+  session.advance(); // Q0
+  answerRight(session, b);
+  answerRight(session, c);
+  answerWrong(session, a);
+  advanceToLeaderboard(session);
+  const board = session.leaderboard();
+  assertEquals(board.map((e) => [e.name, e.rank, e.score]), [
+    ["Ben", 1, 1],
+    ["Cy", 1, 1],
+    ["Ann", 3, 0],
+    ["Dee", 3, 0],
+  ]);
+  assertEquals(session.projectorState().leaderboard[3]!.rank, 3);
+});
+
+Deno.test("questionsAsked counts revealed questions, not the bank", () => {
+  const session = new Session(multiQuiz(5), { randomInt: alwaysZero });
+  assertEquals(session.projectorState().questionsAsked, 0);
+  session.advance(); // Q0 QUESTION
+  assertEquals(session.projectorState().questionsAsked, 0);
+  advanceToLeaderboard(session);
+  assertEquals(session.projectorState().questionsAsked, 1);
+  session.advance(); // Q1 QUESTION
+  advanceToLeaderboard(session);
+  assertEquals(session.projectorState().questionsAsked, 2);
+  // Back does not lower the count of questions already revealed
+  session.back();
+  session.back();
+  assertEquals(session.projectorState().questionsAsked, 2);
+  session.reset();
+  assertEquals(session.projectorState().questionsAsked, 0);
+});
+
+// --- "X of N answered" ---
+
+Deno.test("answer progress: meaningful from Q1; N = online or answered", () => {
+  let t = 1_000_000;
+  const session = new Session(multiQuiz(3), {
+    randomInt: alwaysZero,
+    now: () => t,
+  });
+  const a = session.join("Ann").id;
+  const b = session.join("Ben").id;
+  const c = session.join("Cy").id;
+  // LOBBY: nobody can answer yet
+  assertEquals(session.projectorState().answeredCount, 0);
+  assertEquals(session.projectorState().onlineCount, 3);
+
+  session.advance(); // Q1
+  answerRight(session, a);
+  answerWrong(session, b);
+  let st = session.projectorState();
+  assertEquals([st.answeredCount, st.onlineCount], [2, 3]);
+  // The old engagement metric is still 0 here; the new counter is not
+  assertEquals(st.activeAnsweredCount, 0);
+
+  // Cy's phone stops polling: drops out of N
+  t += ONLINE_WINDOW_MS + 1;
+  session.markSeen(a);
+  st = session.projectorState();
+  assertEquals([st.answeredCount, st.onlineCount], [2, 2]);
+  // Ben answered but went quiet: still counted (X ≤ N)
+  assertEquals(st.answeredCount <= st.onlineCount, true);
+
+  // Cy comes back
+  session.markSeen(c);
+  assertEquals(session.projectorState().onlineCount, 3);
+
+  // Next question: answered resets
+  advanceToLeaderboard(session);
+  session.advance(); // Q2
+  st = session.projectorState();
+  assertEquals(st.answeredCount, 0);
+});
+
+Deno.test("answer progress: unknown ids are ignored; END reports 0 answered", () => {
+  const session = new Session(multiQuiz(1), { randomInt: alwaysZero });
+  session.markSeen("not-a-participant");
+  assertEquals(session.projectorState().onlineCount, 0);
+  const a = session.join("Ann").id;
+  session.advance();
+  answerRight(session, a);
+  advanceToLeaderboard(session);
+  assertEquals(session.projectorState().answeredCount, 1);
+  session.advance(); // END
+  assertEquals(session.projectorState().answeredCount, 0);
+});
+
+Deno.test("duplicate names get a (2), (3) suffix; case and spaces ignored", () => {
+  const session = new Session(sampleQuiz, { randomInt: alwaysZero });
+  assertEquals(session.join("Dana").name, "Dana");
+  assertEquals(session.join("dana").name, "dana (2)");
+  assertEquals(session.join("  DANA ").name, "DANA (3)");
+  assertEquals(session.join("Dana (2)").name, "Dana (2) (2)");
+  assertEquals(session.join("Dana Cohen").name, "Dana Cohen");
+  assertEquals(session.join("dana   cohen").name, "dana   cohen (2)");
+  // Leaderboard and the player's own state use the suffixed name
+  const names = session.leaderboard().map((r) => r.name);
+  assertEquals(names.includes("dana (2)"), true);
+  const { id } = session.join("Dana");
+  assertEquals(session.playerState(id).participant!.name, "Dana (4)");
+  assertEquals(participantNameKey("  Ab\tC "), "ab c");
+});
+
+Deno.test("duplicate-name suffix keeps the name within MAX_NAME_LENGTH", () => {
+  const session = new Session(sampleQuiz, { randomInt: alwaysZero });
+  const long = "x".repeat(MAX_NAME_LENGTH);
+  session.join(long);
+  const second = session.join(long).name;
+  assertEquals(second, "x".repeat(MAX_NAME_LENGTH - 4) + " (2)");
+  const emoji = "🙂".repeat(MAX_NAME_LENGTH / 2);
+  session.join(emoji);
+  const e2 = session.join(emoji).name;
+  assertEquals(e2.length <= MAX_NAME_LENGTH, true);
+  assertEquals(e2.endsWith("🙂 (2)"), true);
+});
+
+Deno.test("player state: correct index only after reveal; own choice kept", () => {
+  const session = new Session(multiQuiz(2), { randomInt: alwaysZero });
+  const a = session.join("A").id;
+  const b = session.join("B").id;
+  const c = session.join("C").id;
+  session.advance(); // QUESTION 0
+  answerRight(session, a);
+  answerWrong(session, b);
+  const correct = session.projectorState().question!.correct;
+  const open = session.playerState(a);
+  assertEquals(open.question!.correctIndex, null);
+  assertEquals(open.participant!.choiceIndex, correct);
+  assertEquals(session.playerState(c).participant!.choiceIndex, null);
+
+  for (const phase of ["CORRECT", "EXPLAIN", "LEADERBOARD"]) {
+    session.advance();
+    assertEquals(session.phase, phase);
+    // A fresh poll (e.g. after a reload) has everything to rebuild the result
+    const sa = session.playerState(a);
+    const sb = session.playerState(b);
+    assertEquals(sa.question!.correctIndex, correct);
+    assertEquals(sa.participant!.choiceIndex, correct);
+    assertNotEquals(sb.participant!.choiceIndex, correct);
+    assertEquals(session.playerState(c).participant!.choiceIndex, null);
+  }
+
+  session.advance(); // QUESTION 1: new question, nothing revealed or chosen
+  const next = session.playerState(a);
+  assertEquals(next.question!.correctIndex, null);
+  assertEquals(next.participant!.choiceIndex, null);
+
+  // Back from CORRECT to a locked QUESTION keeps the reveal
+  answerWrong(session, a);
+  session.advance(); // CORRECT
+  session.back();
+  assertEquals(session.answersLocked, true);
+  const locked = session.playerState(a);
+  assertEquals(locked.question!.correctIndex, session.projectorState().question!.correct);
+  assertNotEquals(locked.participant!.choiceIndex, null);
+});
+
+Deno.test("player score leaves out the open question's point until reveal", () => {
+  const session = new Session(multiQuiz(2), { randomInt: alwaysZero });
+  const a = session.join("A").id;
+  const b = session.join("B").id;
+  session.advance(); // QUESTION 0
+  answerRight(session, a);
+  answerWrong(session, b);
+  // Right and wrong look the same while the question is open
+  assertEquals(session.getParticipant(a)!.score, 1);
+  assertEquals(session.playerScore(a), 0);
+  assertEquals(session.playerState(a).participant!.score, 0);
+  assertEquals(session.playerState(b).participant!.score, 0);
+  session.advance(); // CORRECT
+  assertEquals(session.playerState(a).participant!.score, 1);
+  assertEquals(session.playerState(b).participant!.score, 0);
+  session.back(); // locked QUESTION: already revealed
+  assertEquals(session.playerState(a).participant!.score, 1);
+  session.advance();
+  session.advance();
+  session.advance();
+  session.advance(); // QUESTION 1, not yet answered
+  assertEquals(session.phase, "QUESTION");
+  assertEquals(session.questionIndex, 1);
+  assertEquals(session.playerState(a).participant!.score, 1);
+  answerRight(session, a);
+  assertEquals(session.playerState(a).participant!.score, 1);
 });
