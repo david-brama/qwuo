@@ -51,6 +51,8 @@ LOBBY → QUESTION → CORRECT → EXPLAIN → LEADERBOARD → … → END
    cloudflared tunnel route dns <tunnel-name> quiz.<your-domain>     # DNS record (see the warning below)
    cp .env.tunnel.example .env.tunnel                                # gitignored
    ```
+   > **Warning:** `cloudflared tunnel route dns` writes the record in the zone of the `cert.pem` it uses (default `~/.cloudflared/cert.pem`). If `quiz.<your-domain>` is not in that zone, it appends the cert's zone and creates `quiz.<your-domain>.<cert-zone>` instead. The start script then reports `has no DNS record`. Fix: [Named tunnel DNS](#named-tunnel-dns).
+
    Then set these lines in `.env.tunnel`:
    ```bash
    TUNNEL_NAME=<tunnel-name>
@@ -120,6 +122,31 @@ TUNNEL_NAME=<tunnel-name> PUBLIC_URL=https://quiz.<your-domain> TUNNEL_MODE=nati
 ```
 
 The script gives cloudflared its own config file, so `~/.cloudflared/config.yml` (for example from another project) is never used.
+
+### Named tunnel DNS
+
+> **Warning:** `cloudflared tunnel route dns <tunnel-name> <host>` routes in the zone of the `cert.pem` it uses (`~/.cloudflared/cert.pem`, or `TUNNEL_ORIGIN_CERT` / `--origincert`). If `<host>` is not in that zone, cloudflared appends the cert's zone: for `quiz.<your-domain>` with a cert for `other.example` you get `quiz.<your-domain>.other.example`, and `quiz.<your-domain>` has no DNS record (NXDOMAIN).
+
+When the named tunnel fails its health check and the hostname does not resolve, the start script prints a hint with the tunnel id, then falls back to a quick tunnel.
+
+1. **Find the tunnel id** (read-only):
+   ```bash
+   cloudflared tunnel info <tunnel-name>      # or: cloudflared tunnel list
+   ```
+2. **Add the record**, one of:
+   - **(a) Dashboard:** open the zone that holds `quiz.<your-domain>` → DNS → Records → **Add record**: type `CNAME`, name `quiz` (the host), target `<tunnel-id>.cfargotunnel.com`, proxy status **Proxied** (orange cloud).
+   - **(b) CLI with the right cert:** get a cert for the zone of `quiz.<your-domain>` and point `route dns` at it. `cloudflared tunnel login` does not overwrite an existing `cert.pem`, so move the old one first and keep both:
+     ```bash
+     mv ~/.cloudflared/cert.pem ~/.cloudflared/<cert-zone>.pem
+     cloudflared tunnel login                   # pick the zone of quiz.<your-domain>
+     mv ~/.cloudflared/cert.pem ~/.cloudflared/<your-domain>.pem
+     mv ~/.cloudflared/<cert-zone>.pem ~/.cloudflared/cert.pem   # optional: restore the old default
+     TUNNEL_ORIGIN_CERT=~/.cloudflared/<your-domain>.pem \
+       cloudflared tunnel route dns <tunnel-name> quiz.<your-domain>
+     # or: cloudflared tunnel --origincert ~/.cloudflared/<your-domain>.pem route dns <tunnel-name> quiz.<your-domain>
+     ```
+3. **Remove the wrong record** `quiz.<your-domain>.<cert-zone>` from the cert's zone (dashboard → DNS).
+4. **Check:** `dig +short quiz.<your-domain>` prints addresses, then start again.
 
 ### Tunnel settings
 
@@ -545,6 +572,7 @@ It looks for Chrome in `/Applications`, common Linux paths and `~/Library/Caches
 | Custom `QUIZ_PATH` permission error | Add the path under `deno.json` → `permissions.default.read` |
 | Docker tunnel can’t reach app (Linux) | Try `TUNNEL_MODE=native` |
 | `Health check FAILED: PUBLIC_URL does not answer` | Quick tunnel DNS can be slow: retry, or raise `HEALTH_WAIT_SECS`. Named tunnel: check the public hostname’s service URL in the dashboard |
+| `<host> has no DNS record — add a proxied CNAME …` | `cloudflared tunnel route dns` used the zone of another `cert.pem`. Add the CNAME in the right zone: [Named tunnel DNS](#named-tunnel-dns) |
 | `cloudflared EXITED` / `hostname CHANGED` | The script restarted the tunnel. Quick tunnel: phones must rescan the new QR and join again. Use a named tunnel to avoid this |
 
 ---
