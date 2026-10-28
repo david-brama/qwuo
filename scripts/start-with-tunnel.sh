@@ -15,7 +15,8 @@
 #                               optional TUNNEL_CRED_FILE)
 #   PUBLIC_URL only             no cloudflared (you run the tunnel yourself)
 #   nothing                     quick tunnel (random *.trycloudflare.com, changes on restart)
-# If a named tunnel fails its health check, the script falls back to a quick tunnel.
+# If a named tunnel fails its health check, the script prints a DNS hint when the
+# PUBLIC_URL host does not resolve, then falls back to a quick tunnel.
 #
 # Env: PLAYER_PORT (3001), PROJECTOR_PORT (3000), PUBLIC_URL, QUIZ_PATH, QUIZ_FILTER, QUIZ_IDS,
 #      URL_WAIT_SECS (30), TUNNEL_MODE (docker|native|auto; default auto: docker compose, else native)
@@ -346,6 +347,31 @@ start_quick_tunnel() {
   export PUBLIC_URL
 }
 
+# The named tunnel failed its health check: if PUBLIC_URL's host has no DNS
+# record, say how to add it (a common cause: `cloudflared tunnel route dns`
+# writes the record in cert.pem's zone, not in the hostname's zone).
+dns_hint() {
+  local host id rc=0
+  host="$(url_host "${PUBLIC_URL}")"
+  host_resolves "${host}" || rc=$?
+  case "${rc}" in
+    0)
+      echo "DNS: ${host} resolves; the tunnel does not answer (check that cloudflared is connected and the hostname routes to this tunnel)." >&2
+      ;;
+    1)
+      if [[ "${TUNNEL_KIND}" == "named" ]]; then
+        id="$(lookup_tunnel_id "${TUNNEL_NAME}" "${CF_CONFIG}")"
+      fi
+      loud "${host} has no DNS record — add a proxied CNAME to ${id:-<tunnel-id>}.cfargotunnel.com" \
+        "in the zone's dashboard (cloudflared tunnel route dns uses cert.pem's zone)." \
+        "README → Named tunnel DNS."
+      ;;
+    *)
+      echo "DNS: cannot check ${host} (no dig, host, nslookup or getent on PATH)." >&2
+      ;;
+  esac
+}
+
 # The named tunnel failed its health check: replace it with a quick tunnel
 # and restart the app with the new PUBLIC_URL (same session).
 fall_back_to_quick() {
@@ -482,6 +508,7 @@ start_app
 health_rc=0
 health_check || health_rc=$?
 if [[ "${health_rc}" -eq 2 && ( "${TUNNEL_KIND}" == "token" || "${TUNNEL_KIND}" == "named" ) ]]; then
+  dns_hint
   fall_back_to_quick
   health_check || exit 1
 elif [[ "${health_rc}" -ne 0 ]]; then

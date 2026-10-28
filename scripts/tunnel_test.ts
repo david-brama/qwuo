@@ -1,6 +1,7 @@
 /**
  * Tests for scripts/start-with-tunnel.sh and scripts/tunnel-lib.sh.
- * cloudflared, deno and curl are replaced by stubs on PATH — no real tunnel.
+ * cloudflared, deno, curl and dig are replaced by stubs on PATH — no real
+ * tunnel, no real DNS lookup.
  */
 import { assert, assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 
@@ -77,9 +78,20 @@ Deno.test("extract_quick_tunnel_url: rejects look-alikes", async () => {
   assertEquals(await extract(""), "");
 });
 
-/** Write executable stubs for cloudflared / deno / curl into a temp dir. */
+const TUNNEL_ID = "6f1c2d3e-4a5b-4c6d-8e7f-90a1b2c3d4e5";
+const CONN_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+
+/** Write executable stubs for cloudflared / deno / curl / dig into a temp dir. */
 function makeStubs(
-  opts: { publicCurlFails?: boolean; failHost?: string; quickStaysUp?: boolean } = {},
+  opts: {
+    publicCurlFails?: boolean;
+    failHost?: string;
+    quickStaysUp?: boolean;
+    /** dig answers nothing for this host (NXDOMAIN) */
+    nxHost?: string;
+    /** `cloudflared tunnel info` fails, so the script must use `tunnel list` */
+    infoFails?: boolean;
+  } = {},
 ): string {
   const dir = Deno.makeTempDirSync({ prefix: "qwuo-tunnel-test-" });
   const write = (name: string, body: string) => {
@@ -89,9 +101,20 @@ function makeStubs(
   // cloudflared: 1st quick run prints the api error + banner, then dies
   // (unless quickStaysUp); later quick runs print a new banner and stay up.
   // Records args + token / tunnel-name env presence.
+  // Read-only lookups (tunnel info / list) are logged apart from tunnel runs.
   write(
     "cloudflared",
-    `echo "args=$* token=\${TUNNEL_TOKEN:+set} name=\${TUNNEL_NAME:+set}" | sed 's#--config [^ ]*#--config CFG#' >> "${dir}/cf-calls"
+    `if [[ " $* " == *" info "* || " $* " == *" list "* ]]; then
+  echo "args=$* token=\${TUNNEL_TOKEN:+set} name=\${TUNNEL_NAME:+set}" | sed 's#--config [^ ]*#--config CFG#' >> "${dir}/cf-lookups"
+  if [[ " $* " == *" info "* ]]; then
+    ${opts.infoFails ? "exit 1" : ""}
+    echo '{"id":"${TUNNEL_ID}","name":"quiz","conns":[{"id":"${CONN_ID}"}]}'
+  else
+    printf '[\n  {\n    "id": "${TUNNEL_ID}",\n    "name": "quiz",\n    "connections": [{"id": "${CONN_ID}"}]\n  }\n]\n'
+  fi
+  exit 0
+fi
+echo "args=$* token=\${TUNNEL_TOKEN:+set} name=\${TUNNEL_NAME:+set}" | sed 's#--config [^ ]*#--config CFG#' >> "${dir}/cf-calls"
 echo $$ > "${dir}/cf-pid"
 if [[ "$*" == *"--url"* && "$*" != *" run "* ]]; then
   n=$(cat "${dir}/quick-count" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "${dir}/quick-count"
@@ -123,6 +146,13 @@ echo "$url" >> "${dir}/curl-calls"
 ${opts.publicCurlFails ? `if [[ "$url" != http://127.0.0.1* ]]; then exit 22; fi` : ""}
 ${opts.failHost ? `if [[ "$url" == *"${opts.failHost}"* ]]; then exit 22; fi` : ""}
 echo '{"role":"player","phase":"LOBBY"}'`,
+  );
+  write(
+    "dig",
+    `host=""; for a in "$@"; do [[ "$a" == *.* && "$a" != +* ]] && host="$a"; done
+echo "$host" >> "${dir}/dig-calls"
+${opts.nxHost ? `[[ "$host" == "${opts.nxHost}" ]] && exit 0` : ""}
+echo "192.0.2.1"`,
   );
   return dir;
 }
@@ -358,7 +388,7 @@ Deno.test("tunnel script: environment overrides .env.tunnel", async () => {
 
 for (
   const [kind, env] of [
-    ["TUNNEL_NAME", { TUNNEL_NAME: "qwuo" }],
+    ["TUNNEL_NAME", { TUNNEL_NAME: "quiz" }],
     ["TUNNEL_TOKEN", { TUNNEL_TOKEN: "secret-token-789" }],
   ] as const
 ) {
@@ -377,6 +407,11 @@ for (
     assert(out.includes("CHANGE on EVERY restart"), out);
     assert(out.includes("Health check OK: phones can reach https://first-run-one.trycloudflare.com"), out);
     assert(!out.includes("secret-token-789"), "token printed");
+    // The host resolves: no DNS hint, no tunnel id lookup
+    assert(out.includes("DNS: quiz.example.com resolves"), out);
+    assert(!out.includes("has no DNS record"), out);
+    assertEquals(read(`${stubs}/cf-lookups`), "");
+    assertEquals(read(`${stubs}/dig-calls`).trim().split("\n")[0], "quiz.example.com");
     // Quick cloudflared gets neither the token nor the tunnel name
     const cf = read(`${stubs}/cf-calls`).trim().split("\n");
     assertEquals(cf.length, 2, cf.join("\n"));
@@ -402,7 +437,7 @@ for (
 
 Deno.test("tunnel script: named tunnel without PUBLIC_URL is rejected", async () => {
   const stubs = makeStubs();
-  const envs: Record<string, string>[] = [{ TUNNEL_TOKEN: "x" }, { TUNNEL_NAME: "qwuo" }];
+  const envs: Record<string, string>[] = [{ TUNNEL_TOKEN: "x" }, { TUNNEL_NAME: "quiz" }];
   for (const env of envs) {
     const res = await runScript(stubs, env).output();
     const out = new TextDecoder().decode(res.stderr);
@@ -411,4 +446,123 @@ Deno.test("tunnel script: named tunnel without PUBLIC_URL is rejected", async ()
   }
   assertEquals(read(`${stubs}/cf-calls`), "");
   Deno.removeSync(stubs, { recursive: true });
+});
+
+/** Run the script until it falls back to the quick tunnel; return its output. */
+async function runUntilFallback(
+  stubs: string,
+  env: Record<string, string>,
+): Promise<string> {
+  const child = runScript(stubs, { ...env, PUBLIC_URL: "https://quiz.example.com" });
+  const ok = await waitFor(
+    () => read(`${stubs}/curl-calls`).includes("first-run-one.trycloudflare.com"),
+    15_000,
+  );
+  const { out } = await stop(child);
+  assert(ok, out);
+  assert(await waitFor(() => !alive(`${stubs}/cf-pid`), 3_000), "cloudflared stub still running");
+  return out;
+}
+
+const NX_HINT = "quiz.example.com has no DNS record — add a proxied CNAME to";
+
+Deno.test("tunnel script: TUNNEL_NAME without DNS prints a CNAME hint with the tunnel id", async () => {
+  const stubs = makeStubs({ failHost: "quiz.example.com", quickStaysUp: true, nxHost: "quiz.example.com" });
+  const out = await runUntilFallback(stubs, { TUNNEL_NAME: "quiz" });
+  assert(out.includes(`${NX_HINT} ${TUNNEL_ID}.cfargotunnel.com`), out);
+  assert(out.includes("cloudflared tunnel route dns uses cert.pem's zone"), out);
+  assert(!out.includes(CONN_ID), "connection id used as tunnel id");
+  // Hint first, then the quick-tunnel fallback
+  assert(out.indexOf("has no DNS record") < out.indexOf("NAMED TUNNEL FAILED"), out);
+  assert(out.includes("Health check OK: phones can reach https://first-run-one.trycloudflare.com"), out);
+  // Only a read-only lookup; cloudflared does not get the tunnel name from env
+  assertEquals(
+    read(`${stubs}/cf-lookups`).trim(),
+    "args=tunnel --config CFG info -o json quiz token= name=",
+  );
+  assertEquals(read(`${stubs}/cf-calls`).trim().split("\n").length, 2);
+  Deno.removeSync(stubs, { recursive: true });
+});
+
+Deno.test("tunnel script: tunnel id falls back to `tunnel list` when `tunnel info` fails", async () => {
+  const stubs = makeStubs({
+    failHost: "quiz.example.com",
+    quickStaysUp: true,
+    nxHost: "quiz.example.com",
+    infoFails: true,
+  });
+  const out = await runUntilFallback(stubs, { TUNNEL_NAME: "quiz" });
+  assert(out.includes(`${NX_HINT} ${TUNNEL_ID}.cfargotunnel.com`), out);
+  assertEquals(read(`${stubs}/cf-lookups`).trim().split("\n"), [
+    "args=tunnel --config CFG info -o json quiz token= name=",
+    "args=tunnel --config CFG list -o json --name quiz token= name=",
+  ]);
+  Deno.removeSync(stubs, { recursive: true });
+});
+
+Deno.test("tunnel script: TUNNEL_TOKEN without DNS prints the hint with <tunnel-id>", async () => {
+  const stubs = makeStubs({ failHost: "quiz.example.com", quickStaysUp: true, nxHost: "quiz.example.com" });
+  const out = await runUntilFallback(stubs, { TUNNEL_TOKEN: "secret-token-789" });
+  assert(out.includes(`${NX_HINT} <tunnel-id>.cfargotunnel.com`), out);
+  assert(!out.includes("secret-token-789"), "token printed");
+  assertEquals(read(`${stubs}/cf-lookups`), "");
+  Deno.removeSync(stubs, { recursive: true });
+});
+
+Deno.test("url_host: strips scheme, port and path", async () => {
+  const r = await bash(
+    `. '${LIB}'; url_host https://quiz.example.com; url_host https://quiz.example.com:8443/s/x?y=1; url_host quiz.example.com/`,
+  );
+  assertEquals(r.out.trim().split("\n"), ["quiz.example.com", "quiz.example.com", "quiz.example.com"]);
+});
+
+/**
+ * Run host_resolves with a PATH of only the given stubs plus the few tools the
+ * function needs, so the real dig / host / nslookup are never used.
+ */
+async function resolves(stubs: Record<string, string>): Promise<number> {
+  const dir = Deno.makeTempDirSync({ prefix: "qwuo-dns-test-" });
+  for (const tool of ["grep", "head", "cat"]) {
+    const which = new Deno.Command("bash", { args: ["-c", `command -v ${tool}`] }).outputSync();
+    Deno.symlinkSync(new TextDecoder().decode(which.stdout).trim(), `${dir}/${tool}`);
+  }
+  for (const [name, body] of Object.entries(stubs)) {
+    Deno.writeTextFileSync(`${dir}/${name}`, `#!/bin/bash\n${body}\n`);
+    Deno.chmodSync(`${dir}/${name}`, 0o755);
+  }
+  const r = await bash(`PATH='${dir}'; . '${LIB}'; host_resolves quiz.example.com; echo "rc=$?"`);
+  Deno.removeSync(dir, { recursive: true });
+  return Number(r.out.match(/rc=(\d+)/)?.[1]);
+}
+
+Deno.test("host_resolves: dig, then host, then nslookup, then getent", async () => {
+  // dig: an answer resolves; no answer or only ";;" error lines do not
+  assertEquals(await resolves({ dig: `echo 192.0.2.1` }), 0);
+  assertEquals(await resolves({ dig: `exit 0` }), 1);
+  assertEquals(await resolves({ dig: `echo ';; connection timed out; no servers could be reached'` }), 1);
+  // dig wins over host
+  assertEquals(await resolves({ dig: `exit 0`, host: `exit 0` }), 1);
+  // host: exit code
+  assertEquals(await resolves({ host: `exit 0` }), 0);
+  assertEquals(await resolves({ host: `exit 1` }), 1);
+  // nslookup: exit code and NXDOMAIN text
+  assertEquals(await resolves({ nslookup: `echo 'Address: 192.0.2.1'` }), 0);
+  assertEquals(await resolves({ nslookup: `echo "** server can't find quiz.example.com: NXDOMAIN"` }), 1);
+  assertEquals(await resolves({ nslookup: `exit 1` }), 1);
+  // getent
+  assertEquals(await resolves({ getent: `echo '192.0.2.1 quiz.example.com'` }), 0);
+  assertEquals(await resolves({ getent: `exit 2` }), 1);
+  // no tool: unknown
+  assertEquals(await resolves({}), 2);
+});
+
+Deno.test("first_json_uuid: takes the tunnel id, not a connection id", async () => {
+  const info = `{"id":"${TUNNEL_ID}","name":"quiz","conns":[{"id":"${CONN_ID}"}]}`;
+  const list = `[\n  {\n    "id": "${TUNNEL_ID}",\n    "connections": [{"id": "${CONN_ID}"}]\n  }\n]\n`;
+  for (const json of [info, list]) {
+    const r = await bash(`set -euo pipefail; . '${LIB}'; first_json_uuid`, json);
+    assertEquals(r.out.trim(), TUNNEL_ID);
+  }
+  const none = await bash(`set -euo pipefail; . '${LIB}'; first_json_uuid; echo "rc=$?"`, "error: no tunnel\n");
+  assertEquals(none.out.trim(), "rc=0");
 });
