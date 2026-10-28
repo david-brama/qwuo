@@ -499,6 +499,7 @@ openspec/                    Specs and archived change proposals
 | `deno task dev` | Watch mode |
 | `deno task test` | Unit tests under `src/`, tunnel script tests and a short projector layout check under `scripts/` |
 | `deno task test:ui` | Full projector layout check (every question, see below) |
+| `deno task quiz:lengths` | Answer-length balance: share of questions whose correct choice is the longest, mean len(correct)/len(distractors), offenders. `deno task test` fails above 30% or 1.08 |
 
 ### Projector layout check
 
