@@ -256,6 +256,8 @@ Drop a gitignored `logo.png` next to `main.ts` (repo root). If present at startu
 
 Content lives in JSON (default `quiz.json`, often gitignored so banks stay private). Shape is documented in **`quiz.schema.json`** and enforced at load by `validateQuiz`.
 
+> **`quiz.json` is in `.gitignore` in this repo, so git does not keep it.** Keep your own copy (backup or private repo), especially after content edits such as answer-length balancing. `deno task quiz:lengths` checks a bank; the matching test in `deno task test` is skipped when `quiz.json` is missing.
+
 ### Minimal example
 
 ```json
@@ -515,7 +517,7 @@ openspec/                    Specs and archived change proposals
 - the reconnecting banner does not appear when `/api/state` fails twice in a row, appears after one failure, or does not clear on recovery
 - a presenter key does the wrong thing (→/PageDown/Space/Enter, ←/PageUp, double press, held key, keys on the slider or with the QR modal open, Reset-like keys)
 - the leaderboard does not show the top 10 (or text is below 40 px at 1080p / 22 px elsewhere), or END has no podium
-- on the **375×667 phone**: a question at or under the bank's median length does not show all its choices without scrolling (longer ones: fewer than two), question/choice text is below 15 px / 14 px, the countdown is off screen, or the page scrolls sideways
+- on the **375×667 phone**: any question does not show all its choices without scrolling, question/choice text is below 15 px / 14 px, the countdown is off screen, or the page scrolls sideways
 - on the phone: fewer than 20 of 20 slow (400 ms) presses register, the offline banner or answer error is missing or not visible without scrolling, correct/incorrect shows before the reveal, the result is lost on reload, or a skipped question does not show "You didn't answer" with the correct answer
 
 ```bash

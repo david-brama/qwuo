@@ -1403,30 +1403,31 @@ input[type="text"]:focus { border-color: var(--accent); }
 }
 
 /*
- * Small phones (iPhone SE: 375x667): tighter type and spacing so a typical
- * question and all of its choices fit without scrolling. The footer note is
- * dropped; it adds nothing during play.
+ * Small phones (iPhone SE: 375x667): tighter type and spacing so every
+ * question in the bank shows all of its choices without scrolling. The
+ * footer note is dropped; it adds nothing during play.
  */
 @media (max-height: 760px) {
   .shell {
-    padding: 0.7rem 0.75rem;
-    padding-bottom: max(0.7rem, env(safe-area-inset-bottom));
+    padding: 0.5rem 0.75rem;
+    padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
   }
-  .player-top { margin-bottom: 0.5rem; }
-  .player-bar { font-size: 0.875rem; padding-bottom: 0.35rem; margin-bottom: 0.4rem; }
-  .q-head { margin-bottom: 0.3rem; }
-  .time-bar { margin-bottom: 0.5rem; }
+  .player-top { margin-bottom: 0.35rem; }
+  .player-bar { font-size: 0.875rem; padding-bottom: 0.3rem; margin-bottom: 0.35rem; }
+  .q-head { margin-bottom: 0.25rem; min-height: 1.75rem; }
+  .card .countdown { font-size: 1.1rem; line-height: 1.2; }
+  .time-bar { margin-bottom: 0.4rem; }
   .q-text {
     font-size: 0.95rem;
-    line-height: 1.3;
-    margin-bottom: 0.6rem;
+    line-height: 1.25;
+    margin-bottom: 0.5rem;
   }
-  .q-text p { margin-bottom: 0.35em; }
+  .q-text p { margin-bottom: 0.3em; }
   .choices .choice {
     font-size: 0.875rem;
-    line-height: 1.3;
-    padding: 0.45rem 0.65rem;
-    margin-bottom: 0.4rem;
+    line-height: 1.22;
+    padding: 0.35rem 0.6rem;
+    margin-bottom: 0.3rem;
     border-width: 1.5px;
   }
   .footer-note { display: none; }

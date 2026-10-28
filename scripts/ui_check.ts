@@ -5,7 +5,7 @@
  * → LEADERBOARD → END in headless Chrome at four projector sizes and a
  * 375x667 phone, and fails on scroll overflow, clipped/overlapped content,
  * a QR that does not decode, or a phone question whose choices do not fit
- * (all of them for typical-length questions, at least two for the rest).
+ * (all of them, for every question).
  * The phone also gets slow-press, offline, no-early-reveal and reload checks.
  *
  *   deno task test:ui                      # every question in quiz.json
@@ -1069,9 +1069,9 @@ export async function runUiCheck(opts: UiCheckOptions = {}): Promise<UiCheckResu
           ps.typical++;
           if (pm.visible === pm.choices) ps.typicalAllVisible++;
         }
-        const need = typical ? pm.choices : Math.min(2, pm.choices);
-        if (pm.visible < need) {
-          failures.push(`${phoneVp} ${tag}: ${pm.visible}/${pm.choices} choices visible without scrolling, want ${need}${typical ? " (typical length)" : ""}`);
+        // Every question, however long, shows all of its choices
+        if (pm.visible < pm.choices) {
+          failures.push(`${phoneVp} ${tag}: ${pm.visible}/${pm.choices} choices visible without scrolling, want all`);
         }
         if (pm.qFont < PHONE_FLOORS.q) failures.push(`${phoneVp} ${tag}: question font ${pm.qFont}px < ${PHONE_FLOORS.q}px`);
         if (pm.choiceFont < PHONE_FLOORS.choice) {
