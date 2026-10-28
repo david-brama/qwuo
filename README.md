@@ -47,24 +47,24 @@ LOBBY → QUESTION → CORRECT → EXPLAIN → LEADERBOARD → … → END
    - `QUIZ_IDS='Q1,Q7,Q12'` — exactly these questions, in this order.
 2. **Set up the named tunnel (one time).** With a named tunnel the join URL and the QR stay the same when the script or the tunnel restarts. You need a Cloudflare account, a domain on Cloudflare, and `cloudflared` on your `PATH` (already logged in: `~/.cloudflared/cert.pem` exists). Do these steps yourself:
    ```bash
-   cloudflared tunnel create qwuo                      # writes ~/.cloudflared/<tunnel-id>.json
-   cloudflared tunnel route dns qwuo quiz.<domain>     # DNS record for the fixed hostname
-   cp .env.tunnel.example .env.tunnel                  # gitignored
+   cloudflared tunnel create <tunnel-name>                           # writes ~/.cloudflared/<tunnel-id>.json
+   cloudflared tunnel route dns <tunnel-name> quiz.<your-domain>     # DNS record (see the warning below)
+   cp .env.tunnel.example .env.tunnel                                # gitignored
    ```
    Then set these lines in `.env.tunnel`:
    ```bash
-   TUNNEL_NAME=qwuo
-   PUBLIC_URL=https://quiz.<domain>
+   TUNNEL_NAME=<tunnel-name>
+   PUBLIC_URL=https://quiz.<your-domain>
    # optional: TUNNEL_CRED_FILE=~/.cloudflared/<tunnel-id>.json (full path)
    ```
-   The script runs `cloudflared tunnel --config <own temp file> run --url http://127.0.0.1:$PLAYER_PORT qwuo`. It uses its own config file, so other tunnel configs in `~/.cloudflared` (`config.yml`, `config-*.yml`) have no effect.
+   The script runs `cloudflared tunnel --config <own temp file> run --url http://127.0.0.1:$PLAYER_PORT <tunnel-name>`. It uses its own config file, so other tunnel configs in `~/.cloudflared` (`config.yml`, `config-*.yml`) have no effect.
 
-   **Token alternative** (dashboard tunnel; works with Docker or native cloudflared): Cloudflare dashboard → Zero Trust → Networks → Tunnels → create a tunnel, copy the token, and add the public hostname `quiz.<domain>` with service `http://localhost:3001` (native) or `http://host.docker.internal:3001` (Docker). Then in `.env.tunnel` set `TUNNEL_TOKEN=<token>` and `PUBLIC_URL=https://quiz.<domain>` instead. The script never prints the token. Details: [Stable hostname](#stable-hostname-named-tunnel-recommended-for-the-course).
+   **Token alternative** (dashboard tunnel; works with Docker or native cloudflared): Cloudflare dashboard → Zero Trust → Networks → Tunnels → create a tunnel, copy the token, and add the public hostname `quiz.<your-domain>` with service `http://localhost:3001` (native) or `http://host.docker.internal:3001` (Docker). Then in `.env.tunnel` set `TUNNEL_TOKEN=<token>` and `PUBLIC_URL=https://quiz.<your-domain>` instead. The script never prints the token. Details: [Stable hostname](#stable-hostname-named-tunnel-recommended-for-the-course).
 3. **Start:**
    ```bash
    QUIZ_FILTER='live=true' deno task start:tunnel
    ```
-   It must print `Health check OK: phones can reach https://quiz.<domain>`. Environment variables win over `.env.tunnel`. If no named tunnel is set, or the named tunnel fails its health check, the script starts a **quick tunnel** and shows a loud `QUICK TUNNEL` warning: the URL and the QR then **change on every restart**. Do not continue with a quick tunnel by accident: fix the named tunnel, then start again.
+   It must print `Health check OK: phones can reach https://quiz.<your-domain>`. Environment variables win over `.env.tunnel`. If no named tunnel is set, or the named tunnel fails its health check, the script starts a **quick tunnel** and shows a loud `QUICK TUNNEL` warning: the URL and the QR then **change on every restart**. Do not continue with a quick tunnel by accident: fix the named tunnel, then start again.
 4. **Check the layout** on this laptop: `deno task test:ui` (about 2 minutes). It must end with `OK`.
 5. **Learn the keys** (keyboard or clicker) on the projector: → · PageDown · Space · Enter = **Next**; ← · PageUp = **Back**. Any key or mouse movement also shows the hidden host controls. No key does Reset.
 
@@ -102,21 +102,21 @@ A quick tunnel has no uptime guarantee and gets a new random hostname on every s
 **Token (works with Docker or native cloudflared):**
 
 1. Cloudflare dashboard → Zero Trust → Networks → Tunnels → **Create a tunnel** (cloudflared) → copy the token.
-2. Add a **public hostname**, e.g. `quiz.example.com`, with service:
+2. Add a **public hostname**, e.g. `quiz.<your-domain>`, with service:
    - Docker backend: `http://host.docker.internal:3001`
    - Native backend: `http://localhost:3001`
 3. Start:
 
 ```bash
-TUNNEL_TOKEN='<token>' PUBLIC_URL=https://quiz.example.com deno task start:tunnel
+TUNNEL_TOKEN='<token>' PUBLIC_URL=https://quiz.<your-domain> deno task start:tunnel
 ```
 
 The token is passed to cloudflared through the environment (not the command line) and is never printed.
 
-**Locally managed tunnel (native cloudflared only):** after `cloudflared tunnel login`, `cloudflared tunnel create qwuo` and `cloudflared tunnel route dns qwuo quiz.example.com`, put `TUNNEL_NAME=qwuo` and `PUBLIC_URL=https://quiz.example.com` in `.env.tunnel`, or:
+**Locally managed tunnel (native cloudflared only):** after `cloudflared tunnel login`, `cloudflared tunnel create <tunnel-name>` and `cloudflared tunnel route dns <tunnel-name> quiz.<your-domain>` (see [Named tunnel DNS](#named-tunnel-dns)), put `TUNNEL_NAME=<tunnel-name>` and `PUBLIC_URL=https://quiz.<your-domain>` in `.env.tunnel`, or:
 
 ```bash
-TUNNEL_NAME=qwuo PUBLIC_URL=https://quiz.example.com TUNNEL_MODE=native deno task start:tunnel
+TUNNEL_NAME=<tunnel-name> PUBLIC_URL=https://quiz.<your-domain> TUNNEL_MODE=native deno task start:tunnel
 ```
 
 The script gives cloudflared its own config file, so `~/.cloudflared/config.yml` (for example from another project) is never used.
